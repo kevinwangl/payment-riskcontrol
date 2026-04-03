@@ -32,7 +32,7 @@ Three-phase risk control architecture:
 Key tech decisions:
 - Event bus: Amazon EventBridge + SQS + Lambda
 - Decision log ingestion: EventBridge → Data Firehose → Redshift
-- Data sync: Aurora PostgreSQL → Redshift via Zero-ETL
+- Data sync: Aurora MySQL → Redshift via Zero-ETL
 - Model hot-reload: Redis Pub/Sub broadcast to all EKS pods
 - Estimated cost: ~$4,000-5,000/month for 100K-500K daily transactions
 

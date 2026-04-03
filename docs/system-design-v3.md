@@ -15,7 +15,7 @@
   - 四、事后风控 — 监控与追溯
   - 五、三阶段联动机制
 - 第二部分：系统核心能力
-  - 六、规则引擎
+  - 六、规则引擎（含 6.4 表达式执行核心）
   - 七、Velocity 引擎
   - 八、黑白名单引擎
   - 九、评分模型
@@ -40,12 +40,12 @@
 
 ### 1.1 业务背景
 
-面向美国本地市场，为 ISO（Independent Sales Organization）和 Partner 提供收单支付 SaaS 平台的交易风控能力。平台通过 Processor 对接卡组织（Visa / Mastercard / Amex / Discover），支持 Card Present（CP）和 Card Not Present（CNP）两种交易模式。
+面向美国本地市场，为 ISO（Independent Sales Organization）/ ISV（Independent Software Vendor）提供收单支付 SaaS 平台的交易风控能力。平台通过 Processor 对接卡组织（Visa / Mastercard / Amex / Discover），支持 Card Present（CP）和 Card Not Present（CNP）两种交易模式。
 
 ### 1.2 核心目标
 
 - 实时交易风控决策，P99 延迟 < 50ms
-- 多租户分层规则体系，ISO/Partner 可自助配置规则和表达式
+- 多租户分层规则体系，ISO/ISV 可自助配置规则和表达式
 - 完整的 Chargeback 争议管理流程
 - 人机协同标注 + 模型自动训练的智能风控闭环
 - 满足美国本地合规要求（PCI DSS、BSA/AML、OFAC）
@@ -53,7 +53,7 @@
 ### 1.3 业务规模
 
 - 日交易量：10 万 ～ 50 万笔
-- 租户层级：Platform → ISO → Partner → Merchant → Sub-merchant
+- 租户层级：Platform → ISO/ISV → Merchant
 - 卡组织对接：通过 Processor（非直连）
 
 ### 1.4 风控三阶段全景
@@ -168,12 +168,18 @@
     └── 卡 BIN 校验（是否在允许范围）
     │
     ▼ (通过)
-风控引擎并行决策 (<50ms)
-    ├── 黑白名单匹配 ──────── → 黑白名单引擎 (第八章)
-    ├── Velocity 检查 ──────── → Velocity 引擎 (第七章)
-    ├── 规则表达式求值 ─────── → 规则引擎 (第六章)
-    ├── 关联分析 ────────────── → 关联分析引擎 (第十章)
-    └── 评分模型打分 ────────── → 评分模型 (第九章)
+风控引擎决策 (<50ms)
+    │
+    ├─ 并行分支 A: 规则引擎编排执行 (第六章 6.4 节)
+    │     规则引擎是编排核心，逐条求值 DSL 表达式，
+    │     表达式内部按需调用子引擎：
+    │     ├── velocity()  → Velocity 引擎 (第七章, Redis 查询)
+    │     ├── blacklist()/whitelist()/greylist() → 黑白名单引擎 (第八章, Bloom+Redis)
+    │     └── link_count() → 关联分析引擎 (第十章, Redis HyperLogLog)
+    │
+    └─ 并行分支 B: 评分模型打分 (第九章)
+          独立于规则引擎并行执行，打分结果回填 TransactionContext.risk_score
+          供后续规则引用 (如 risk_score > 60)
     │
     ▼
 汇总决策: 匹配规则直接返回 decision + suggestions (见 3.2 节)
@@ -266,8 +272,7 @@ REVIEW 人工审核后处置:
 
 ```
 执行链: Platform Rules (强制, 不可覆盖)
-            → ISO Rules
-            → Partner Rules
+            → ISO/ISV Rules
             → Merchant Rules
 
 决策逻辑:
@@ -286,7 +291,7 @@ REVIEW 人工审核后处置:
 - 同 IP/设备 10 分钟内使用 > 5 张不同卡 → 拦截
 - 授权失败率 > 30%（1 小时窗口）→ 通知商户管理系统临时冻结商户
 
-处置：触发后风控系统输出智能建议（3DS/CAPTCHA），由支付业务侧执行；严重时通知商户管理系统临时冻结商户交易入口，通知 ISO/Partner。
+处置：触发后风控系统输出智能建议（3DS/CAPTCHA），由支付业务侧执行；严重时通知商户管理系统临时冻结商户交易入口，通知 ISO/ISV。
 
 ### 3.5 交易上下文校验
 
@@ -385,7 +390,7 @@ Representment 提交 (在时限内提交给 Processor)
 关键设计：
 - 时效管理：Visa 和 MC dispute 时限不同，系统自动跟踪 deadline 并预警
 - 拒付率监控：实时计算 Merchant 的 chargeback ratio（Visa VDMP 阈值 0.9%，MC ECP 阈值 1.5%）
-- 超标预警：接近阈值时自动通知 ISO/Partner，触发商户风控升级
+- 超标预警：接近阈值时自动通知 ISO/ISV，触发商户风控升级
 - 风控联动：高拒付商户自动收紧风控规则（通知商户管理系统降低单笔限额、标记强制 3DS 等）
 - 标签回流：Chargeback 结果作为最可靠的欺诈标签回流到模型训练数据集
 
@@ -478,7 +483,7 @@ Redshift 全量扫描历史交易（按特征匹配）
 |------|------|------|---------|
 | 平台风控总览 | 平台风控团队 | 实时仪表盘 | 全局拒绝率、REVIEW 率、拒付率、模型准确率 |
 | ISO 风控报告 | ISO 管理员 | 日报/周报 | 旗下商户拒付率排名、风险事件汇总、限额使用率 |
-| 商户风控报告 | Partner/Merchant | 日报 | 交易通过率、拒绝原因分布、拒付详情 |
+| 商户风控报告 | ISO/ISV/Merchant | 日报 | 交易通过率、拒绝原因分布、拒付详情 |
 | 模型监控报告 | 数据团队 | 周报 | 模型 AUC、精确率/召回率、特征漂移、预测分布 |
 
 合规报告（合规团队，月报）：
@@ -538,6 +543,7 @@ Redshift 全量扫描历史交易（按特征匹配）
 | `risk.model.updated` | 事后 → 事中 | 模型训练完成，通知引擎热加载 |
 | `risk.merchant.status` | 事后 → 事前/事中 | 商户状态变更（降级/冻结/关停） |
 | `risk.list.updated` | 事后 → 事中 | 黑白名单变更，通知缓存刷新 |
+| `risk.rule.updated` | 管理 → 事中 | 规则变更（新增/编辑/禁用/删除），通知所有 Pod 刷新编译缓存 |
 | `risk.case.created` | 事后内部 | 案件创建，分配调查员 |
 
 ### 5.3 自动化处置规则
@@ -564,7 +570,7 @@ Redshift 全量扫描历史交易（按特征匹配）
 
 ### 6.1 表达式 DSL
 
-支持 ISO/Partner 自助配置规则和表达式。基于 ANTLR4 自研轻量级表达式解析器。
+支持 ISO/ISV 自助配置规则和表达式。基于 ANTLR4 自研轻量级表达式解析器。
 
 规则配置示例：
 
@@ -608,9 +614,344 @@ Redshift 全量扫描历史交易（按特征匹配）
 ### 6.3 安全约束
 
 - 表达式沙箱执行，禁止任意代码
-- 平台级规则 ISO/Partner 不可修改或覆盖
+- 平台级规则 ISO/ISV 不可修改或覆盖
 - 规则变更需审计日志，支持版本回滚
 - 规则编译后缓存，变更时热加载
+
+### 6.4 表达式执行核心
+
+> 本节描述规则引擎从 DSL 字符串到最终决策结果的完整运行时机制，精确指导开发实现。
+
+#### 6.4.1 整体架构
+
+```
+规则表达式字符串 (condition_expr)
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ ① ANTLR4 解析器                                      │
+│    condition_expr → Lexer → Parser → AST (语法树)     │
+│    编译产物缓存至本地 ConcurrentHashMap                  │
+└──────────────────────┬──────────────────────────────┘
+                       │ AST
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│ ② AST 求值器 (ExpressionEvaluator)                    │
+│                                                       │
+│    遍历 AST 节点，按节点类型分派：                        │
+│    ├── 字段引用节点 → 从 TransactionContext 取值         │
+│    ├── 比较/逻辑节点 → 本地运算                          │
+│    └── 函数调用节点 → ③ 外部引擎函数调度                  │
+└──────────────────────┬──────────────────────────────┘
+                       │
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+   ┌────────────┐ ┌─────────┐ ┌──────────────┐
+   │ Velocity   │ │ 名单引擎 │ │ 关联分析引擎  │
+   │ 引擎       │ │         │ │              │
+   │ Redis 查询 │ │ Redis + │ │ Redis        │
+   │ 滑动窗口   │ │ Bloom   │ │ HyperLogLog  │
+   └────────────┘ └─────────┘ └──────────────┘
+          │            │            │
+          └────────────┼────────────┘
+                       ▼
+              函数返回值回填 AST
+                       │
+                       ▼
+              布尔求值 → HIT / NO MATCH
+                       │
+                       ▼
+              HIT → 返回 Action { decision, suggestions }
+```
+
+#### 6.4.2 ANTLR4 语法定义
+
+文件：`RiskExpression.g4`
+
+```antlr
+grammar RiskExpression;
+
+// ===== Parser Rules =====
+expr
+    : expr AND expr                          // 逻辑与
+    | expr OR expr                           // 逻辑或
+    | NOT expr                               // 逻辑非
+    | '(' expr ')'                           // 分组
+    | comparison                             // 比较表达式
+    ;
+
+comparison
+    : operand op=( '>' | '<' | '>=' | '<=' | '==' | '!=' ) operand
+    | operand 'IN' array
+    | operand 'NOT' 'IN' array
+    ;
+
+operand
+    : functionCall                           // velocity('card_number','1h')
+    | fieldRef                               // txn.amount
+    | NUMBER                                 // 5000
+    | STRING                                 // 'US'
+    ;
+
+functionCall
+    : IDENTIFIER '(' argList ')'             // 函数名(参数列表)
+    ;
+
+argList
+    : operand ( ',' operand )*
+    ;
+
+fieldRef
+    : IDENTIFIER ( '.' IDENTIFIER )*         // txn.amount, card.issuer_country
+    ;
+
+array
+    : '[' operand ( ',' operand )* ']'       // ['VISA','MC']
+    ;
+
+// ===== Lexer Rules =====
+// 注意：ANTLR4 关键字优先级高于 IDENTIFIER，AND/OR/NOT/IN 不会被误匹配为标识符
+AND     : 'AND' ;
+OR      : 'OR' ;
+NOT     : 'NOT' ;
+IN      : 'IN' ;
+NUMBER  : '-'? [0-9]+ ('.' [0-9]+)? ;
+STRING  : '\'' (~'\'')* '\'' ;
+IDENTIFIER : [a-zA-Z_] [a-zA-Z0-9_]* ;
+WS      : [ \t\r\n]+ -> skip ;
+```
+
+开发要点：
+- 使用 ANTLR4 Maven 插件在编译期自动生成 `RiskExpressionLexer`、`RiskExpressionParser`、`RiskExpressionVisitor`
+- 实现 `RiskExpressionVisitor<Object>` 完成 AST 求值（见 6.4.4）
+- 语法设计刻意精简，不支持赋值、循环、方法定义等通用语言特性，确保沙箱安全
+
+#### 6.4.3 编译与缓存
+
+```
+规则创建/更新
+    │
+    ▼
+ANTLR4 解析 condition_expr
+    │
+    ├── 语法错误 → 拒绝保存，返回错误位置和提示
+    │
+    └── 解析成功 → 写入 Aurora (condition_expr 原文)
+                    → 发送 risk.rule.updated 事件
+```
+
+运行时加载策略（纯本地缓存，不缓存 AST 到 Redis）：
+
+> ANTLR4 的 ParseTree 包含大量内部引用（parent 指针、token 引用），序列化成本高且脆弱（ANTLR 版本升级可能导致反序列化失败）。
+> 对于 10万-50万日交易量规模，本地 ConcurrentHashMap + 事件驱动刷新足够，无需 Redis L2 缓存 AST。
+
+| 场景 | 行为 |
+|------|------|
+| 服务启动 | 从 Aurora 批量加载所有 enabled 规则的 `condition_expr` → 逐条编译为 AST → 写入本地 `ConcurrentHashMap` |
+| 规则变更 | 事件总线 `risk.rule.updated` → 所有 EKS Pod 接收 → 从 Aurora 读取最新 `condition_expr` → 重新编译 → 刷新本地缓存 |
+| 缓存未命中 | 从 Aurora 读取 `condition_expr` → 实时编译 → 写入本地缓存 |
+| 规则禁用/删除 | 事件总线通知 → 从本地缓存中移除 |
+
+本地缓存结构：
+
+```java
+// 本地缓存：ConcurrentHashMap，事件驱动刷新
+Map<String, CompiledRule> localCache = new ConcurrentHashMap<>();
+
+class CompiledRule {
+    String ruleId;
+    int version;
+    ParseTree ast;           // ANTLR4 解析树
+    String tenantType;       // PLATFORM / ISO / MERCHANT
+    String tenantId;
+    int priority;
+    String entryMode;        // CP / CNP / ALL
+    Action action;           // { decision, suggestions, reasonCode }
+}
+```
+
+#### 6.4.4 执行上下文
+
+每笔交易进入规则引擎时，构建 `TransactionContext` 作为表达式求值的数据源：
+
+```java
+class TransactionContext {
+    // === 交易维度 ===
+    BigDecimal amount;
+    String entryMode;          // CP / CNP
+    String currency;
+    int hour;                  // 交易时间（小时），用于时段规则
+    String terminalLocation;   // CP 终端经纬度
+
+    // === 卡片维度 ===
+    String cardHash;           // 脱敏卡号 hash
+    String bin;
+    String issuerCountry;
+    String cardType;           // CREDIT / DEBIT / PREPAID
+    String cardBrand;          // VISA / MC / AMEX
+    String lastLocation;       // 上次交易位置
+
+    // === 验证结果 ===
+    String avsResult;          // Y / N / U
+    String cvvResult;          // M / N / U
+
+    // === 商户维度 ===
+    String merchantId;
+    String mcc;
+    String merchantStatus;     // ACTIVE / FROZEN / SUSPENDED
+    int merchantAgeDays;
+    BigDecimal singleTxnLimit;
+
+    // === 运行时标识 ===
+    String ip;
+    String deviceFingerprint;
+    String email;
+
+    // === 评分模型输出（并行分支 B 回填） ===
+    int riskScore;                 // 评分模型打分结果 (0-100)，供规则引用 risk_score > 60
+}
+```
+
+字段解析规则 — AST 中的 `fieldRef` 节点（如 `txn.amount`）按以下映射取值：
+
+| DSL 字段路径 | Context 属性 | 类型 |
+|-------------|-------------|------|
+| `txn.amount` | `amount` | BigDecimal |
+| `txn.entry_mode` | `entryMode` | String |
+| `txn.hour` | `hour` | int |
+| `card.issuer_country` | `issuerCountry` | String |
+| `card.bin` | `bin` | String |
+| `card.type` | `cardType` | String |
+| `card.brand` | `cardBrand` | String |
+| `avs_result` | `avsResult` | String |
+| `cvv_result` | `cvvResult` | String |
+| `merchant.mcc` | `mcc` | String |
+| `merchant.status` | `merchantStatus` | String |
+| `merchant.age_days` | `merchantAgeDays` | int |
+| `merchant.single_txn_limit` | `singleTxnLimit` | BigDecimal |
+| `risk_score` | `riskScore` | int |
+
+实现方式：启动时构建 `Map<String, Function<TransactionContext, Object>>` 字段解析器注册表，避免运行时反射。
+
+#### 6.4.5 外部引擎函数调度
+
+AST 求值器遇到 `functionCall` 节点时，通过函数注册表路由到对应的外部引擎：
+
+```java
+// 函数注册表 — 启动时注册，运行时查表调用
+Map<String, ExternalFunction> functionRegistry = Map.of(
+    "velocity",           velocityEngine::count,
+    "velocity_amount",    velocityEngine::sumAmount,
+    "blacklist",          listEngine::checkBlacklist,
+    "whitelist",          listEngine::checkWhitelist,
+    "greylist",           listEngine::checkGreylist,
+    "link_count",         linkEngine::countLinks,
+    "geo_distance",       geoEngine::calcDistance,
+    "same_amount_count",  velocityEngine::sameAmountCount
+);
+
+@FunctionalInterface
+interface ExternalFunction {
+    Object invoke(TransactionContext ctx, List<Object> args);
+}
+```
+
+各函数的调用链路：
+
+| DSL 函数 | 路由目标 | 底层操作 | 返回值 |
+|---------|---------|---------|--------|
+| `velocity('card_number','1h')` | VelocityEngine | Redis GET `vel:{card_hash}:cnt:1h` | int (次数) |
+| `velocity_amount('card_number','24h')` | VelocityEngine | Redis GET `vel:{card_hash}:amt:24h` | BigDecimal (金额) |
+| `blacklist('card_hash')` | ListEngine | Bloom Filter → Redis SISMEMBER | boolean |
+| `whitelist('card_hash')` | ListEngine | Redis SISMEMBER | boolean |
+| `greylist('ip')` | ListEngine | Redis SISMEMBER | boolean |
+| `link_count('device','card','1h')` | LinkEngine | Redis PFCOUNT `link:{device_fp}:cards:1h` | int (去重计数) |
+| `geo_distance(loc1, loc2)` | GeoEngine | Haversine 公式本地计算 | double (km) |
+| `same_amount_count('card_number','1h')` | VelocityEngine | Redis 自定义计数器 | int |
+
+函数调用的第一个参数为维度标识（如 `'card_number'`），引擎内部从 `TransactionContext` 中取对应的实际值（如 `cardHash`）再拼接 Redis Key。
+
+异常处理：
+
+| 异常场景 | 处理策略 |
+|---------|---------|
+| Redis 超时 (>5ms) — 计数类函数 (velocity/link_count) | 返回默认安全值 0，规则继续执行 |
+| Redis 超时 (>5ms) — 名单类函数 (blacklist/whitelist/greylist) | fallback 查询 Aurora `risk_lists` 表（与 12.1 降级策略一致），超时仍未返回则按保守策略：blacklist 返回 true（拦截），whitelist 返回 false（不放行） |
+| 函数名未注册 | 编译期拦截（6.4.3 语法校验阶段），不会到达运行时 |
+| 参数个数/类型错误 | 编译期拦截 |
+
+#### 6.4.6 多租户规则编排
+
+三层规则的执行顺序和短路逻辑：
+
+```
+输入: TransactionContext + 当前交易的 tenantId 链 (Platform → ISO → Merchant)
+
+Step 0: 白名单前置短路
+    IF whitelist('card_hash') == true (任一租户层级):
+        RETURN { decision=APPROVE, triggeredRules=[], suggestions=[], reasonCode='WHITELIST' }
+        // 跳过所有规则检查 (见 8.1 WHITELIST 定义)
+
+Step 1: 筛选适用规则
+    从本地缓存中筛选:
+    - Platform 全部 enabled 规则
+    - 当前 ISO 的 enabled 规则
+    - 当前 Merchant 的 enabled 规则
+    - 按 entryMode 过滤 (CP/CNP/ALL)
+
+Step 2: 按层级 + 优先级排序
+    排序键: [tenantType 权重(P=0, I=1, M=2), priority ASC]
+
+Step 3: 逐条求值 (短路逻辑)
+    finalDecision = APPROVE
+    triggeredRules = []
+    allSuggestions = []
+
+    FOR each rule IN sortedRules:
+        result = evaluate(rule.ast, transactionContext)  // 6.4.1-6.4.5 的完整求值
+
+        IF result == HIT:
+            triggeredRules.add(rule.ruleId)
+            allSuggestions.addAll(rule.action.suggestions)
+
+            IF rule.action.decision == DECLINE:
+                RETURN { decision=DECLINE, triggeredRules, allSuggestions, reasonCode }  // 立即短路，保留已收集的 suggestions 用于审计
+            ELSE IF rule.action.decision == REVIEW:
+                finalDecision = REVIEW    // 标记但不短路，继续执行后续规则
+                reasonCode = rule.reasonCode
+
+    RETURN { decision=finalDecision, triggeredRules, allSuggestions, reasonCode }
+```
+
+关键设计决策：
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| DECLINE 短路 | 命中即返回，不执行后续规则 | 减少无效计算，P99 更稳定 |
+| REVIEW 不短路 | 标记后继续执行 | 收集所有命中规则，为审核员提供完整风险画像 |
+| Platform 规则优先 | 始终最先执行 | 合规规则（OFAC 等）不可被租户规则绕过 |
+| suggestions 合并 | 所有命中规则的 suggestions 取并集 | 多条规则可能建议不同验证手段 |
+
+#### 6.4.7 性能约束
+
+目标：单条规则求值 < 1ms，全链路（含所有规则）P99 < 50ms。
+
+| 优化手段 | 作用 | 预期收益 |
+|---------|------|---------|
+| AST 编译缓存 (本地 ConcurrentHashMap) | 避免每次请求重新解析 | 省去 ~2ms 解析开销 |
+| 字段解析器注册表 | 预构建 Map，避免运行时反射 | 字段取值 < 0.01ms |
+| 外部函数并行调用 | 同一规则内多个函数调用并行发起 Redis 请求 | 多函数场景从串行 N×RTT 降为 1×RTT |
+| Redis Pipeline | 单条规则涉及多个 Redis Key 时批量发送 | 减少网络往返 |
+| DECLINE 短路 | 命中拒绝规则后跳过剩余规则 | 最坏情况下也不会遍历全部规则 |
+| 规则预筛选 | 按 entryMode 过滤不适用规则 | CP 交易跳过 CNP-only 规则 |
+| 本地 Bloom Filter | 名单查询先过本地 Bloom Filter | 减少 ~90% 的 Redis 名单查询 |
+
+超时保护：
+
+```
+单条规则求值超时: 5ms → 跳过该规则，标记 degraded，记录告警日志
+全链路超时: 45ms → 终止剩余规则，基于已有结果返回决策，标记 degraded
+```
 
 ---
 
@@ -678,18 +1019,50 @@ Redshift 全量扫描历史交易（按特征匹配）
 
 ### 9.2 第一期：规则加权评分
 
+> 第一期不单独实现评分引擎，直接复用规则引擎（第六章）。通过新增 `ADD_SCORE` action 类型，每条评分规则命中时累加分数，最终汇总为 risk_score。
+
+规则引擎 action 类型扩展：
+
+| action 类型 | 含义 | 示例 |
+|------------|------|------|
+| `APPROVE` / `REVIEW` / `DECLINE` | 决策类（已有） | 直接决定交易结果 |
+| `ADD_SCORE` | 评分累加类（新增） | 命中时将 `score_delta` 累加到 `risk_score` |
+
+评分规则配置示例：
+
+```json
+{
+  "rule_id": "S001",
+  "name": "高额交易加分",
+  "tenant_type": "PLATFORM",
+  "condition": { "expr": "txn.amount > 3000" },
+  "action": { "decision": "ADD_SCORE", "score_delta": 20, "suggestions": [] },
+  "reason_code": "HIGH_AMOUNT"
+}
 ```
-风险分 = 0
-IF txn.amount > 3000           THEN +20
-IF card.issuer_country != 'US' THEN +15
-IF avs_result == 'N'          THEN +25
-IF cvv_result == 'N'          THEN +30
-IF velocity(card, 1h) > 3     THEN +20
-IF txn.entry_mode == 'CNP'    THEN +10
-IF merchant.age_days < 90     THEN +15
+
+执行流程：
+
+```
+Step 1: 执行所有 ADD_SCORE 规则，累加 risk_score
+    risk_score = 0
+    IF txn.amount > 3000           THEN risk_score += 20
+    IF card.issuer_country != 'US' THEN risk_score += 15
+    IF avs_result == 'N'          THEN risk_score += 25
+    IF cvv_result == 'N'          THEN risk_score += 30
+    IF velocity(card, 1h) > 3     THEN risk_score += 20
+    IF txn.entry_mode == 'CNP'    THEN risk_score += 10
+    IF merchant.age_days < 90     THEN risk_score += 15
+
+Step 2: risk_score 回填 TransactionContext.riskScore
+
+Step 3: 执行决策类规则 (APPROVE/REVIEW/DECLINE)
+    后续规则可引用 risk_score，如: risk_score > 70 → DECLINE
 
 阈值: 0-40 APPROVE / 41-70 REVIEW / 71+ DECLINE
 ```
+
+优势：无需两套执行路径，评分规则和决策规则共享同一套 DSL、编译缓存、多租户编排能力。第二期切换为 ML 模型后，`ADD_SCORE` 规则自然退役，risk_score 改由 SageMaker Endpoint 提供。
 
 ### 9.3 第二期：ML 模型
 
@@ -856,6 +1229,9 @@ EventBridge Custom Event Bus: risk-event-bus
     ├── Rule: risk.list.updated
     │     └──→ SQS: list-refresh-queue → Lambda: CacheRefresher (刷新 Redis 缓存)
     │
+    ├── Rule: risk.rule.updated
+    │     └──→ SQS: rule-refresh-queue → Lambda: RuleCacheRefresher (通知所有 Pod 重新编译并刷新本地规则缓存)
+    │
     ├── Rule: risk.merchant.status
     │     └──→ SQS: merchant-status-queue → Lambda: MerchantStatusHandler
     │
@@ -915,7 +1291,7 @@ EventBridge Custom Event Bus: risk-event-bus
    ▼    ▼                ▼              ▼                  ▼
 ┌───────────┐ ┌──────────┐   Zero-ETL   ┌────────────┐  ┌──────────────────┐
 │ElastiCache│ │ Aurora   ├─────────────►│ Redshift   │  │ S3               │
-│  Redis    │ │PostgreSQL│              │ Serverless │  │ (模型/归档)       │
+│  Redis    │ │  MySQL   │              │ Serverless │  │ (模型/归档)       │
 └───────────┘ └──────────┘              └────────────┘  └──────────────────┘
 
 ┌────────────────┐
@@ -954,14 +1330,14 @@ Transaction Service
 ```
 热数据 (实时读写, <10ms)
   └── ElastiCache Redis Cluster
-      Velocity 计数器、黑白名单缓存、规则编译缓存、幂等 Key
+      Velocity 计数器、黑白名单缓存、关联分析计数器、幂等 Key
 
 温数据 (业务主库, <50ms)
-  └── Aurora PostgreSQL
+  └── Aurora MySQL
       规则配置、租户信息、Chargeback 案件、审核标注、审计日志
 
 温冷数据同步 (联机分析支撑)
-  └── Aurora PostgreSQL 通过 AWS Zero-ETL 或 DMS 近实时同步业务数据 (商户/案件) 到 Redshift，供各类报表视图联合查询。
+  └── Aurora MySQL 通过 AWS Zero-ETL 近实时同步业务数据 (商户/案件) 到 Redshift，供各类报表视图联合查询。
 
 冷数据 (分析/报表, 秒级)
   └── Redshift Serverless
@@ -985,17 +1361,17 @@ Transaction Service
 | API 协议 | REST | 对外对内统一 REST，简化技术栈 |
 | 审核工作台前端 | React + Ant Design | 快速搭建后台管理界面 |
 
-### 14.2 数据层（AWS 体系）
+### 14.2 数据层（AWS 体系，ML 管道见 14.3）
 
 | 组件 | AWS 服务 | 用途 |
 |------|---------|------|
-| 热数据 | ElastiCache Redis Cluster | Velocity 计数器、黑白名单缓存、规则编译缓存 |
-| 业务主库 | Aurora PostgreSQL | 规则配置、租户信息、Chargeback 案件、审核标注、审计日志 |
+| 热数据 | ElastiCache Redis Cluster | Velocity 计数器、黑白名单缓存、幂等 Key、关联分析计数器 |
+| 业务主库 | Aurora MySQL | 规则配置、租户信息、Chargeback 案件、审核标注、审计日志 |
 | 分析仓库 | Redshift Serverless | 交易流水、风控决策日志、特征快照、统计报表 |
 | 归档存储 | S3 | 历史交易归档(Parquet)、模型文件、Chargeback 证据 |
 | 事件总线 | EventBridge + SQS + Lambda | 风控事件总线、异步事件处理 |
 | 流式导入 | Amazon Data Firehose | 决策日志自动攒批写入 Redshift |
-| 数据同步 | Aurora Zero-ETL / DMS | Aurora 业务数据近实时同步到 Redshift |
+| 数据同步 | Aurora Zero-ETL | Aurora 业务数据近实时同步到 Redshift |
 | 运维告警 | SNS | 告警事件通知推送 |
 
 ### 14.3 ML 管道
@@ -1020,86 +1396,87 @@ Transaction Service
 
 ## 十五、数据库设计
 
-### 15.1 Aurora PostgreSQL
+### 15.1 Aurora MySQL
 
 ```sql
 -- ========== 事前风控 ==========
 
 -- 商户入网风险评估
 CREATE TABLE merchant_risk_assessment (
-    id              BIGSERIAL PRIMARY KEY,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     merchant_id     VARCHAR(64) NOT NULL,
     iso_id          VARCHAR(64) NOT NULL,
     mcc             VARCHAR(10) NOT NULL,
     risk_score      INT NOT NULL,
-    risk_level      VARCHAR(20) NOT NULL,    -- LOW/MEDIUM/HIGH/PROHIBITED
-    kyc_status      VARCHAR(20) NOT NULL,    -- PENDING/APPROVED/REJECTED
-    ofac_check      VARCHAR(20) NOT NULL,    -- CLEAR/HIT/PENDING
-    match_tmf_check VARCHAR(20) NOT NULL,    -- CLEAR/HIT/PENDING
-    website_review  VARCHAR(20),             -- APPROVED/REJECTED/NA
-    trial_period    BOOLEAN DEFAULT true,
+    risk_level      VARCHAR(20) NOT NULL     COMMENT 'LOW/MEDIUM/HIGH/PROHIBITED',
+    kyc_status      VARCHAR(20) NOT NULL     COMMENT 'PENDING/APPROVED/REJECTED',
+    ofac_check      VARCHAR(20) NOT NULL     COMMENT 'CLEAR/HIT/PENDING',
+    match_tmf_check VARCHAR(20) NOT NULL     COMMENT 'CLEAR/HIT/PENDING',
+    website_review  VARCHAR(20)              COMMENT 'APPROVED/REJECTED/NA',
+    trial_period    TINYINT(1) DEFAULT 1,
     trial_end_date  DATE,
-    settlement_cycle VARCHAR(10) NOT NULL,   -- T+2/T+3/T+7/T+14
+    settlement_cycle VARCHAR(10) NOT NULL    COMMENT 'T+2/T+3/T+7/T+14',
     reserve_rate    DECIMAL(5,2) DEFAULT 0,
     single_txn_limit DECIMAL(12,2),
     daily_limit     DECIMAL(12,2),
     monthly_limit   DECIMAL(12,2),
     next_review_date DATE,
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 商户复审记录
 CREATE TABLE merchant_review_log (
-    id              BIGSERIAL PRIMARY KEY,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     merchant_id     VARCHAR(64) NOT NULL,
-    review_type     VARCHAR(20) NOT NULL,    -- QUARTERLY/ANNUAL/TRIGGERED
+    review_type     VARCHAR(20) NOT NULL     COMMENT 'QUARTERLY/ANNUAL/TRIGGERED',
     trigger_reason  VARCHAR(256),
     previous_level  VARCHAR(20),
     new_level       VARCHAR(20),
     reviewer        VARCHAR(64),
     review_note     TEXT,
-    reviewed_at     TIMESTAMPTZ DEFAULT now()
-);
+    reviewed_at     DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ========== 事中风控 ==========
 
 -- 多租户规则配置
 CREATE TABLE risk_rules (
-    id              BIGSERIAL PRIMARY KEY,
-    tenant_type     VARCHAR(20) NOT NULL,   -- PLATFORM/ISO/PARTNER/MERCHANT
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_type     VARCHAR(20) NOT NULL     COMMENT 'PLATFORM/ISO/MERCHANT',
     tenant_id       VARCHAR(64) NOT NULL,
     rule_name       VARCHAR(128) NOT NULL,
     priority        INT NOT NULL DEFAULT 100,
-    entry_mode      VARCHAR(10),            -- CP/CNP/ALL
+    entry_mode      VARCHAR(10)              COMMENT 'CP/CNP/ALL',
     condition_expr  TEXT NOT NULL,
-    action          VARCHAR(20) NOT NULL,    -- APPROVE/REVIEW/DECLINE
+    action          VARCHAR(20) NOT NULL     COMMENT 'APPROVE/REVIEW/DECLINE',
+    suggestions     JSON                     COMMENT '["REQUIRE_3DS"]',
     reason_code     VARCHAR(64),
-    enabled         BOOLEAN DEFAULT true,
+    enabled         TINYINT(1) DEFAULT 1,
     version         INT NOT NULL DEFAULT 1,
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 黑白名单
 CREATE TABLE risk_lists (
-    id              BIGSERIAL PRIMARY KEY,
-    tenant_type     VARCHAR(20) NOT NULL,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_type     VARCHAR(20) NOT NULL     COMMENT 'PLATFORM/ISO/MERCHANT',
     tenant_id       VARCHAR(64) NOT NULL,
-    list_type       VARCHAR(20) NOT NULL,    -- BLACKLIST/WHITELIST/GREYLIST
-    dimension       VARCHAR(20) NOT NULL,    -- CARD_HASH/BIN/IP/DEVICE/EMAIL
+    list_type       VARCHAR(20) NOT NULL     COMMENT 'BLACKLIST/WHITELIST/GREYLIST',
+    dimension       VARCHAR(20) NOT NULL     COMMENT 'CARD_HASH/BIN/IP/DEVICE/EMAIL',
     value           VARCHAR(256) NOT NULL,
-    enabled         BOOLEAN DEFAULT true,
-    expires_at      TIMESTAMPTZ,
+    enabled         TINYINT(1) DEFAULT 1,
+    expires_at      DATETIME(3),
     reason          VARCHAR(256),
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ========== 事后风控 ==========
 
 -- Chargeback 案件
 CREATE TABLE chargeback_cases (
-    id              BIGSERIAL PRIMARY KEY,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     txn_id          VARCHAR(64) NOT NULL,
     merchant_id     VARCHAR(64) NOT NULL,
     iso_id          VARCHAR(64) NOT NULL,
@@ -1107,80 +1484,80 @@ CREATE TABLE chargeback_cases (
     reason_code     VARCHAR(10) NOT NULL,
     amount          DECIMAL(12,2) NOT NULL,
     currency        VARCHAR(3) DEFAULT 'USD',
-    status          VARCHAR(20) NOT NULL,    -- RECEIVED/UNDER_REVIEW/REPRESENTED/WON/LOST/ARBITRATION
-    deadline        TIMESTAMPTZ NOT NULL,
-    received_at     TIMESTAMPTZ NOT NULL,
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
+    status          VARCHAR(20) NOT NULL     COMMENT 'RECEIVED/UNDER_REVIEW/REPRESENTED/WON/LOST/ARBITRATION',
+    deadline        DATETIME(3) NOT NULL,
+    received_at     DATETIME(3) NOT NULL,
+    updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 人工审核标注
 CREATE TABLE review_tasks (
-    id              BIGSERIAL PRIMARY KEY,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     txn_id          VARCHAR(64) NOT NULL,
     risk_score      INT NOT NULL,
-    triggered_rules JSONB,
+    triggered_rules JSON,
     assigned_to     VARCHAR(64),
     status          VARCHAR(20) DEFAULT 'PENDING',
-    label           VARCHAR(20),             -- LEGIT/FRAUD/SUSPICIOUS
+    label           VARCHAR(20)              COMMENT 'LEGIT/FRAUD/SUSPICIOUS',
     fraud_type      VARCHAR(64),
     reviewer_note   TEXT,
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    reviewed_at     TIMESTAMPTZ
-);
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    reviewed_at     DATETIME(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 风控案件管理
 CREATE TABLE risk_cases (
-    id              BIGSERIAL PRIMARY KEY,
-    case_type       VARCHAR(30) NOT NULL,    -- FRAUD_TXN/MERCHANT_VIOLATION/CHARGEBACK_EXCEED/COMPLIANCE
-    priority        VARCHAR(5) NOT NULL,     -- P0/P1/P2/P3
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    case_type       VARCHAR(30) NOT NULL     COMMENT 'FRAUD_TXN/MERCHANT_VIOLATION/CHARGEBACK_EXCEED/COMPLIANCE',
+    priority        VARCHAR(5) NOT NULL      COMMENT 'P0/P1/P2/P3',
     merchant_id     VARCHAR(64),
     iso_id          VARCHAR(64),
     title           VARCHAR(256) NOT NULL,
     description     TEXT,
     status          VARCHAR(20) DEFAULT 'OPEN',
     assigned_to     VARCHAR(64),
-    deadline        TIMESTAMPTZ,
+    deadline        DATETIME(3),
     resolution      TEXT,
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now(),
-    closed_at       TIMESTAMPTZ
-);
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    closed_at       DATETIME(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 自动化处置执行记录
 CREATE TABLE auto_action_log (
-    id              BIGSERIAL PRIMARY KEY,
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     trigger_event   VARCHAR(64) NOT NULL,
-    target_type     VARCHAR(20) NOT NULL,    -- MERCHANT/BIN/IP/CARD
+    target_type     VARCHAR(20) NOT NULL     COMMENT 'MERCHANT/BIN/IP/CARD',
     target_id       VARCHAR(128) NOT NULL,
     action_taken    VARCHAR(64) NOT NULL,
     previous_value  TEXT,
     new_value       TEXT,
-    auto_revert_at  TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
+    auto_revert_at  DATETIME(3),
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ========== 审计日志（PCI DSS，仅 INSERT，禁止 UPDATE/DELETE） ==========
 
 CREATE TABLE audit_log (
-    id              BIGSERIAL PRIMARY KEY,
-    event_type      VARCHAR(64) NOT NULL,    -- RULE_CHANGE/LIST_CHANGE/MERCHANT_STATUS_CHANGE/LOGIN/DECISION/...
-    actor_type      VARCHAR(20) NOT NULL,    -- USER/SYSTEM/API
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    event_type      VARCHAR(64) NOT NULL     COMMENT 'RULE_CHANGE/LIST_CHANGE/MERCHANT_STATUS_CHANGE/LOGIN/DECISION/...',
+    actor_type      VARCHAR(20) NOT NULL     COMMENT 'USER/SYSTEM/API',
     actor_id        VARCHAR(64) NOT NULL,
-    tenant_type     VARCHAR(20),
+    tenant_type     VARCHAR(20)              COMMENT 'PLATFORM/ISO/MERCHANT',
     tenant_id       VARCHAR(64),
     resource_type   VARCHAR(64),
     resource_id     VARCHAR(128),
-    action          VARCHAR(20) NOT NULL,    -- CREATE/UPDATE/DELETE/READ/LOGIN/LOGOUT
-    detail          JSONB,                   -- 变更前后的完整快照
+    action          VARCHAR(20) NOT NULL     COMMENT 'CREATE/UPDATE/DELETE/READ/LOGIN/LOGOUT',
+    detail          JSON                     COMMENT '变更前后的完整快照',
     ip_address      VARCHAR(45),
     user_agent      TEXT,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE INDEX idx_audit_log_time ON audit_log(created_at);
 CREATE INDEX idx_audit_log_actor ON audit_log(actor_id, created_at);
 CREATE INDEX idx_audit_log_resource ON audit_log(resource_type, resource_id, created_at);
--- REVOKE UPDATE, DELETE ON audit_log FROM app_user;
+-- REVOKE UPDATE, DELETE ON audit_log FROM 'app_user'@'%';
 ```
 
 ### 15.2 Redshift
@@ -1257,10 +1634,16 @@ LEFT JOIN (
 ```
 交易请求进入
     │
-    ├─ 并行执行 ──┬── 黑白名单查询 (Redis, ~1ms)
-    │             ├── Velocity 查询 & 更新 (Redis, ~2ms)
-    │             ├── 关联分析查询 (Redis, ~2ms)
-    │             └── 规则表达式求值 (内存, ~5ms)
+    ├─ 并行分支 A: 规则引擎编排执行 (~10ms)
+    │     逐条求值 DSL 表达式 (内存, ~1ms/条)
+    │     表达式内部按需调用子引擎:
+    │     ├── 黑白名单查询 (Bloom Filter + Redis, ~1ms)
+    │     ├── Velocity 查询 & 更新 (Redis, ~2ms)
+    │     └── 关联分析查询 (Redis HyperLogLog, ~2ms)
+    │     同一规则内多个函数调用通过 Redis Pipeline 并行 (见 6.4.7)
+    │
+    └─ 并行分支 B: 评分模型打分 (SageMaker Endpoint, ~15ms, 第二期)
+          打分结果回填 TransactionContext.risk_score
     │
     ▼
   汇总决策 (~1ms, 规则 Action 直接携带 decision + suggestions)
@@ -1286,7 +1669,7 @@ LEFT JOIN (
 
 | AWS 服务 | 规格 | 预估月成本 |
 |---------|------|-----------|
-| Aurora PostgreSQL | db.r6g.xlarge, 1写+2读 | ~$1,500 |
+| Aurora MySQL | db.r6g.xlarge, 1写+2读 | ~$1,500 |
 | ElastiCache Redis | cache.r6g.large, 3节点 | ~$800 |
 | Redshift Serverless | 8 RPU 基础 | ~$500-1,500 |
 | EventBridge | Custom Event Bus, 7 Rules | ~$15 |
@@ -1381,6 +1764,6 @@ Velocity 引擎                      ✓             ✓
 智能闭环                           ✓             ✓
 (第十一章)                      模型热加载     标注→训练→更新
 
-降级/幂等/事件总线(EventBridge)     ✓             ✓
-(第十二章)                      降级+幂等      事件驱动联动
+降级/幂等/事件总线(EventBridge)     ✓             ✓             ✓
+(第十二章)                      事件通知       降级+幂等      事件驱动联动
 ```

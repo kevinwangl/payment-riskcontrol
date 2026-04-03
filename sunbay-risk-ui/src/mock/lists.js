@@ -13,7 +13,7 @@ export const lists = [
   { id:'L012', type:'WHITELIST', dimension:'IP', value:'172.16.0.1', reason:'Corporate office IP', addedBy:'admin@sunbay.io', tenantId:'ISO_2001', expiresAt:null, createdAt:'2026-01-15T08:00:00Z' },
   { id:'L013', type:'WHITELIST', dimension:'CARD_HASH', value:'378282******0005', reason:'Test card - QA', addedBy:'admin@sunbay.io', tenantId:'PLATFORM', expiresAt:'2026-12-31T00:00:00Z', createdAt:'2026-01-01T00:00:00Z' },
   { id:'L014', type:'WHITELIST', dimension:'DEVICE', value:'dev_m1n2o3p4q5r6', reason:'Internal testing device', addedBy:'admin@sunbay.io', tenantId:'PLATFORM', expiresAt:null, createdAt:'2025-12-01T00:00:00Z' },
-  { id:'L015', type:'WHITELIST', dimension:'EMAIL', value:'vip***@partner.com', reason:'Partner VIP', addedBy:'j.smith@sunbay.io', tenantId:'ISO_2001', expiresAt:null, createdAt:'2026-02-15T10:00:00Z' },
+  { id:'L015', type:'WHITELIST', dimension:'EMAIL', value:'vip***@partner.com', reason:'ISO VIP', addedBy:'j.smith@sunbay.io', tenantId:'ISO_2001', expiresAt:null, createdAt:'2026-02-15T10:00:00Z' },
   { id:'L016', type:'GREYLIST', dimension:'CARD_HASH', value:'520000******9999', reason:'Suspicious pattern - under investigation', addedBy:'system_auto', tenantId:'PLATFORM', expiresAt:'2026-04-10T00:00:00Z', createdAt:'2026-03-26T12:00:00Z' },
   { id:'L017', type:'GREYLIST', dimension:'IP', value:'192.168.1.45', reason:'Elevated velocity - monitoring', addedBy:'system_auto', tenantId:'ISO_2001', expiresAt:'2026-04-05T00:00:00Z', createdAt:'2026-03-28T08:00:00Z' },
   { id:'L018', type:'GREYLIST', dimension:'BIN', value:'601101', reason:'BIN range under review', addedBy:'a.chen@sunbay.io', tenantId:'PLATFORM', expiresAt:'2026-04-20T00:00:00Z', createdAt:'2026-03-20T14:00:00Z' },
