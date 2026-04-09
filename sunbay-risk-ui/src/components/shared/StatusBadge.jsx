@@ -11,6 +11,10 @@ const styles = {
   LOST: 'bg-danger/10 text-danger', ARBITRATION: 'bg-warning/10 text-warning',
   PENDING: 'bg-warning/10 text-warning', APPROVED: 'bg-success/10 text-success',
   REJECTED: 'bg-danger/10 text-danger', CLEAR: 'bg-success/10 text-success', HIT: 'bg-danger/10 text-danger',
+  BLOCKED: 'bg-danger/10 text-danger', SUSPENDED: 'bg-warning/10 text-warning',
+  ACTIVE: 'bg-success/10 text-success', ALERT: 'bg-primary/10 text-primary',
+  WARNING: 'bg-warning/10 text-warning', HIGH_RISK: 'bg-danger text-white',
+  TRIAL: 'bg-primary/10 text-primary', OBSERVATION: 'bg-warning/10 text-warning', FROZEN: 'bg-danger/10 text-danger',
 }
 
 export default function StatusBadge({ status }) {

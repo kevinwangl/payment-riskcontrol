@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/shared/StatusBadge'
 import { merchants } from '../mock/merchants'
 import { chargebacks } from '../mock/chargebacks'
+import { mockDevices } from '../mock/devices'
 import { fmt } from '../utils/format'
 import MetricTooltip from '../components/shared/MetricTooltip'
 
@@ -67,6 +68,28 @@ export default function MerchantDetail() {
             ))}</tbody>
           </table>
         </div>
+      )}
+
+      {mockDevices.filter(d => d.merchant_id === id).length > 0 && (
+      <div className="mt-8">
+        <h3 className="text-sm font-semibold mb-3">Associated Devices</h3>
+        <table className="w-full text-[13px]">
+          <thead><tr className="border-b border-border">
+            <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Device ID</th>
+            <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Category</th>
+            <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Model</th>
+            <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Status</th>
+          </tr></thead>
+          <tbody>{mockDevices.filter(d => d.merchant_id === id).map(d => (
+            <tr key={d.device_id} className="border-b border-border/50 hover:bg-surface">
+              <td className="py-2 font-mono">{d.device_id}</td>
+              <td className="py-2">{d.device_category}</td>
+              <td className="py-2">{d.manufacturer} {d.model}</td>
+              <td className="py-2"><StatusBadge status={d.status === 'ACTIVE' ? 'APPROVED' : d.status} /></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
       )}
     </div>
   )

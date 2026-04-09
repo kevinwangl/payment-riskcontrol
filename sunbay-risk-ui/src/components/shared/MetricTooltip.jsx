@@ -39,6 +39,11 @@ const metrics = {
   'Entry Mode': { formula: 'Entry Mode ∈ {CP (Card Present), CNP (Card Not Present)}', desc: 'How the card was used. CP: physical swipe/insert/tap at terminal. CNP: online/phone/mail order. CNP has higher fraud risk, different rules apply (3DS, AVS/CVV checks).' },
   'MCC': { formula: 'MCC = 4-digit Merchant Category Code (ISO 18245)', desc: 'Industry classification. Determines risk profile and contextual rules. 5411 (Grocery), 5812 (Restaurants), 7011 (Hotels), 5966 (Direct Marketing - high risk). Some MCCs are prohibited.' },
   'Algorithm': { formula: 'Algorithm ∈ {XGBoost, LightGBM}', desc: 'Machine learning model type. XGBoost: gradient boosted trees, robust and interpretable. LightGBM: faster training, lower memory, similar accuracy. Both output fraud probability 0-1.' },
+  // Device Risk
+  'Attestation Fail Rate': { formula: 'Attestation Fail Rate = (Attestation FAILED + EXPIRED) / Total Device Transactions × 100%', desc: 'Percentage of transactions where device integrity attestation (Google Play Integrity / Apple DeviceCheck) failed or expired. High rate indicates compromised devices or SDK issues. Target: < 1%.' },
+  'Geofence Trigger Rate': { formula: 'Geofence Trigger Rate = geo_distance(device, merchant) > radius Transactions / Total Transactions × 100%', desc: 'Percentage of transactions where device location exceeded the merchant geofence radius. Indicates potential device theft, location spoofing, or misconfigured geofence. Target: < 2%.' },
+  'COTS Device Share': { formula: 'COTS Share = COTS_DEVICE Transactions / Total Transactions × 100%', desc: 'Percentage of transactions from consumer off-the-shelf devices (phones/tablets running SoftPOS). COTS devices carry highest risk due to uncontrolled environment, root/jailbreak exposure, and lack of hardware tamper protection.' },
+  'POS Device Share': { formula: 'POS Share = CERTIFIED_POS Transactions / Total Transactions × 100%', desc: 'Percentage of transactions from PCI PTS certified payment terminals. These are the most secure device category with hardware encryption, tamper detection, and closed operating systems.' },
 }
 
 export default function MetricTooltip({ name, children }) {

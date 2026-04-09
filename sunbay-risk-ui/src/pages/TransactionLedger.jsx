@@ -1,8 +1,13 @@
 import React, { useState } from 'react'
+import { Link } from 'react-router-dom'
 import StatusBadge from '../components/shared/StatusBadge'
 import RiskScore from '../components/shared/RiskScore'
 import { transactions } from '../mock/transactions'
+import { rules } from '../mock/rules'
+import { deviceRiskRules } from '../mock/devices'
 import { fmt } from '../utils/format'
+
+const allRules = [...rules, ...deviceRiskRules]
 
 export default function TransactionLedger() {
   const [filter, setFilter] = useState('')
@@ -29,7 +34,7 @@ export default function TransactionLedger() {
             </tr></thead>
             <tbody>
               {filtered.slice(0,50).map(t => (
-                <tr key={t.id} onClick={() => setSelected(t)}
+                <tr key={t.id} onClick={() => setSelected(s => s?.id === t.id ? null : t)}
                   className={`border-b border-border/50 cursor-pointer hover:bg-surface ${selected?.id === t.id ? 'bg-surface' : ''}`} style={{height:32}}>
                   <td className="py-1 pr-4 font-mono text-[12px]">{t.id.slice(0,16)}</td>
                   <td className="py-1 pr-4 text-muted text-[12px] font-mono">{fmt.datetime(t.timestamp)}</td>
@@ -43,29 +48,81 @@ export default function TransactionLedger() {
           </table>
         </div>
 
-        {/* JSON Inspector Drawer */}
         {selected && (
-          <div className="w-[40%] border-l border-border pl-6 ml-6 overflow-y-auto" style={{maxHeight:'calc(100vh - 200px)'}}>
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <div className="font-mono text-sm font-medium">{selected.id.slice(0,16)}</div>
-                <div className="text-[11px] text-muted">RAW PAYLOAD INSPECTOR</div>
-              </div>
-              <button onClick={() => setSelected(null)} className="text-muted hover:text-black text-lg">×</button>
-            </div>
-            <pre className="text-[12px] font-mono leading-relaxed whitespace-pre-wrap">
-              {JSON.stringify({
-                id: selected.id, object:'transaction', amount: Number(selected.amount)*100,
-                currency: selected.currency, status: selected.decision.toLowerCase(),
-                merchant: { id: selected.merchantId, name: selected.merchantName, mcc: selected.mcc },
-                payment_method: { card: { brand: selected.cardBrand, country: selected.cardIssuerCountry, last4: selected.cardLast4, type: selected.cardType }},
-                risk_details: { score: selected.score, rules_evaluated: selected.triggeredRules, suggestions: selected.suggestions },
-                client_ip: selected.ip, device_id: selected.deviceFingerprint,
-              }, null, 2).replace(/"([^"]+)":/g, '<span class="text-black">"$1"</span>:').replace(/: "([^"]+)"/g, ': <span class="text-primary">"$1"</span>').replace(/: (true|false)/g, ': <span class="text-success">$1</span>').replace(/: (\d+)/g, ': <span class="text-black">$1</span>')}
-            </pre>
-          </div>
+          <TxnInspector txn={selected} />
         )}
       </div>
+    </div>
+  )
+}
+
+function TxnInspector({ txn: t }) {
+  const [showJson, setShowJson] = useState(false)
+  const matched = t.triggeredRules.map(id => allRules.find(r => r.id === id)).filter(Boolean)
+  const d = t.device
+
+  return (
+    <div className="w-[40%] border-l border-border pl-6 ml-6 overflow-y-auto" style={{maxHeight:'calc(100vh - 200px)'}}>
+      <div className="flex items-center justify-between mb-4">
+        <Link to={`/transactions/${t.id}`} className="font-mono text-sm font-medium text-primary hover:underline">{t.id.slice(0,16)} →</Link>
+        <span className="text-[12px] text-muted">{t.entryMode} · {t.ip}</span>
+      </div>
+
+      {/* Triggered Rules */}
+      <div className="mb-4">
+        <div className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-2">
+          Triggered Rules {matched.length > 0 && <span className="text-danger">({matched.length})</span>}
+        </div>
+        {matched.length === 0 && <div className="text-[12px] text-muted py-1">No rules triggered</div>}
+        {matched.map(r => (
+          <div key={r.id} className="py-2 border-b border-border/50">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] font-medium">{r.id}</span>
+              <span className="text-[12px]">{r.name}</span>
+              <StatusBadge status={r.action?.decision || r.risk_level || ''} />
+            </div>
+            <div className="font-mono text-[10px] text-muted mt-1 truncate" title={r.condition}>{r.condition}</div>
+          </div>
+        ))}
+        {t.reasonCode && <div className="text-[11px] text-muted mt-2">Reason: <span className="font-mono">{t.reasonCode}</span></div>}
+        <div className="text-[10px] text-muted mt-1">Score = Σ(Rule Weight × Match) · 0-40 APPROVE · 41-70 REVIEW · 71+ DECLINE</div>
+      </div>
+
+      {/* Device Summary */}
+      {d && (
+        <div className="mb-4 pb-4 border-b border-border">
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-2">Device</div>
+          <div className="text-[12px]">
+            <span className="font-mono">{d.device_category}</span> · {d.manufacturer} {d.model} · {d.acceptance_method}
+          </div>
+          <div className="flex gap-4 mt-1 text-[11px]">
+            {d.attestation && <span>Attestation: <span className={d.attestation.status === 'VERIFIED' ? 'text-success' : 'text-danger'}>{d.attestation.status}</span></span>}
+            {d.security?.is_rooted !== undefined && <span>Root: <span className={d.security.is_rooted ? 'text-danger' : 'text-success'}>{d.security.is_rooted ? 'Yes' : 'Clean'}</span></span>}
+            {d.security?.tee_available !== undefined && <span>TEE: <span className={d.security.tee_available ? 'text-success' : 'text-danger'}>{d.security.tee_available ? '✓' : '✗'}</span></span>}
+            {d.firmware_version && <span>FW: {d.firmware_version}</span>}
+          </div>
+          {d.location && <div className="text-[11px] text-muted mt-1">📍 {d.location.lat.toFixed(4)}, {d.location.lng.toFixed(4)} ({d.location.source})</div>}
+        </div>
+      )}
+
+      {/* Collapsible Raw JSON */}
+      <button onClick={() => setShowJson(!showJson)} className="text-[12px] text-muted hover:text-black mb-2">
+        {showJson ? '▾' : '▸'} Raw JSON
+      </button>
+      {showJson && (
+        <pre className="text-[11px] font-mono leading-relaxed whitespace-pre-wrap bg-surface p-3 max-h-[300px] overflow-y-auto"
+          dangerouslySetInnerHTML={{__html: JSON.stringify({
+            id:t.id, amount:Number(t.amount)*100, currency:t.currency, status:t.decision.toLowerCase(),
+            merchant:{id:t.merchantId,name:t.merchantName,mcc:t.mcc},
+            card:{brand:t.cardBrand,country:t.cardIssuerCountry,last4:t.cardLast4,type:t.cardType},
+            risk:{score:t.score,rules:t.triggeredRules,reason:t.reasonCode,suggestions:t.suggestions},
+            ip:t.ip, ...(t.device?{device:t.device}:{}),
+          },null,2).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"([^"]+)":/g,'<span class="text-black">"$1"</span>:')
+            .replace(/: "([^"]+)"/g,': <span class="text-primary">"$1"</span>')
+            .replace(/: (true|false)/g,': <span class="text-success">$1</span>')
+            .replace(/: (-?\d+\.?\d*)/g,': <span class="text-black">$1</span>')}} />
+      )}
     </div>
   )
 }

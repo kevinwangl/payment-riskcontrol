@@ -46,12 +46,38 @@ export const tenantTree = [
 ]
 
 export const fieldOptions = [
-  'txn.amount','txn.entry_mode','txn.hour','card.issuer_country','card.bin','card.type','card.brand',
-  'avs_result','cvv_result','merchant.mcc','merchant.status','merchant.age_days',
-  "velocity('card_number','1h')","velocity('merchant_id','5m')","velocity_amount('card_number','24h')",
-  "link_count('device','card','1h')","link_count('ip','card','10m')","link_count('card','merchant','1h')",
-  "blacklist('card_hash')","greylist('card_hash')","greylist('ip')","whitelist('card_hash')",
-  "geo_distance(txn.terminal_location, card.last_location)","same_amount_count('card_number','1h')",
+  // Transaction
+  { key:'txn.amount', label:'txn.amount', group:'Transaction', desc:'Transaction amount in local currency. Use for limit checks and high-value alerts.' },
+  { key:'txn.entry_mode', label:'txn.entry_mode', group:'Transaction', desc:'Card entry mode: CP (Card Present) or CNP (Card Not Present). CNP carries higher fraud risk.' },
+  { key:'txn.hour', label:'txn.hour', group:'Transaction', desc:'Hour of day (0-23) when transaction occurred. Useful for off-hours detection.' },
+  // Card
+  { key:'card.issuer_country', label:'card.issuer_country', group:'Card', desc:'ISO country code of card issuer. Cross-border transactions are higher risk.' },
+  { key:'card.bin', label:'card.bin', group:'Card', desc:'First 6 digits of card number. Identifies issuer and card program. Some BINs are high-risk.' },
+  { key:'card.type', label:'card.type', group:'Card', desc:'Card type: CREDIT, DEBIT, or PREPAID. Prepaid cards have higher fraud rates.' },
+  { key:'card.brand', label:'card.brand', group:'Card', desc:'Card network: Visa, Mastercard, Amex, Discover.' },
+  // Verification
+  { key:'avs_result', label:'avs_result', group:'Verification', desc:'Address Verification result: Y (match), N (mismatch), U (unavailable). N is a fraud signal.' },
+  { key:'cvv_result', label:'cvv_result', group:'Verification', desc:'CVV check result: M (match), N (mismatch), U (unavailable). N indicates possible stolen card number.' },
+  // Merchant
+  { key:'merchant.mcc', label:'merchant.mcc', group:'Merchant', desc:'4-digit Merchant Category Code (ISO 18245). Determines industry risk profile.' },
+  { key:'merchant.status', label:'merchant.status', group:'Merchant', desc:'Merchant status: ACTIVE, TRIAL, OBSERVATION, FROZEN, SUSPENDED.' },
+  { key:'merchant.age_days', label:'merchant.age_days', group:'Merchant', desc:'Days since merchant onboarding. New merchants (<90 days) require stricter monitoring.' },
+  // Velocity
+  { key:"velocity('card_number','1h')", label:"velocity('card_number','1h')", group:'Velocity', desc:'Card transaction count in last 1 hour. Detects rapid-fire card usage.' },
+  { key:"velocity('merchant_id','5m')", label:"velocity('merchant_id','5m')", group:'Velocity', desc:'Merchant transaction count in last 5 minutes. Detects card testing attacks.' },
+  { key:"velocity_amount('card_number','24h')", label:"velocity_amount('card_number','24h')", group:'Velocity', desc:'Card cumulative amount in last 24 hours. Detects high-value card draining.' },
+  // Link Analysis
+  { key:"link_count('device','card','1h')", label:"link_count('device','card','1h')", group:'Link Analysis', desc:'Distinct cards used on same device in 1 hour. Detects fraud factory operations.' },
+  { key:"link_count('ip','card','10m')", label:"link_count('ip','card','10m')", group:'Link Analysis', desc:'Distinct cards from same IP in 10 minutes. Detects bot-driven card testing.' },
+  { key:"link_count('card','merchant','1h')", label:"link_count('card','merchant','1h')", group:'Link Analysis', desc:'Distinct merchants a card hits in 1 hour. Detects card sweep attacks.' },
+  // Lists
+  { key:"blacklist('card_hash')", label:"blacklist('card_hash')", group:'Lists', desc:'Check if card hash is on blacklist. Returns true for confirmed fraud/stolen cards.' },
+  { key:"greylist('card_hash')", label:"greylist('card_hash')", group:'Lists', desc:'Check if card hash is on greylist. Returns true for cards under investigation.' },
+  { key:"greylist('ip')", label:"greylist('ip')", group:'Lists', desc:'Check if IP is on greylist. Returns true for IPs with suspicious activity.' },
+  { key:"whitelist('card_hash')", label:"whitelist('card_hash')", group:'Lists', desc:'Check if card hash is on whitelist. Returns true for VIP/trusted cards.' },
+  // Geo
+  { key:"geo_distance(txn.terminal_location, card.last_location)", label:"geo_distance(terminal, last_location)", group:'Geo', desc:'Distance in km between terminal and card last-used location. Detects impossible travel.' },
+  { key:"same_amount_count('card_number','1h')", label:"same_amount_count('card_number','1h')", group:'Velocity', desc:'Count of identical-amount transactions on same card in 1 hour. Detects duplicate charges.' },
 ]
 
 export const operatorOptions = ['>','<','>=','<=','==','!=','IN','NOT IN']

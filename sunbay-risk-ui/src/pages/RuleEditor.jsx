@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { rules, fieldOptions, operatorOptions } from '../mock/rules'
+import { deviceCategories, deviceFieldsByCategory } from '../mock/devices'
 
 // Build a sample JSON object from conditions that would MATCH all conditions
 function buildTestJson(conditions) {
@@ -13,7 +14,19 @@ function buildTestJson(conditions) {
   }
   conditions.forEach(c => {
     const field = c.field.replace(/['"]/g, '')
-    if (field.includes('(')) return // skip functions
+    if (field.includes('(')) {
+      // Generate stub values for function-style fields
+      const v = c.value.replace(/['"]/g, '')
+      const num = Number(v)
+      const stubVal = c.op === '>' ? (isNaN(num) ? 999 : num + 1000) : (isNaN(num) ? 0 : num)
+      // Extract function name as key
+      const fname = field.split('(')[0]
+      set(`_fn.${fname}`, stubVal)
+      // Also extract any dotted args as real paths (e.g. txn.terminal_location)
+      const args = field.match(/[\w.]+/g) || []
+      args.slice(1).forEach(a => { if (a.includes('.')) set(a, a.includes('lat') || a.includes('location') ? 37.7749 : 'sample') })
+      return
+    }
     const v = c.value.replace(/['"]/g, '')
     const num = Number(v)
     if (c.op === '>') set(field, isNaN(num) ? v : num + 1000)
@@ -39,8 +52,14 @@ export default function RuleEditor() {
   const [conditions, setConditions] = useState(
     existing ? parseConditions(existing.condition) : [{ field:'txn.amount', op:'>', value:'1000' }]
   )
+  const [deviceCategory, setDeviceCategory] = useState(existing?.device_category || 'ALL')
   const [testJson, setTestJson] = useState('')
   const [testResult, setTestResult] = useState(null)
+
+  const deviceCategoryFields = deviceCategory !== 'ALL' && deviceFieldsByCategory[deviceCategory]
+    ? deviceFieldsByCategory[deviceCategory].map(f => ({ key:`device.${f.key}`, label:`device.${f.key}`, group:'Device', desc:f.desc }))
+    : []
+  const allFieldOptions = [...fieldOptions, ...deviceCategoryFields]
 
   // Auto-generate test JSON whenever conditions change
   useEffect(() => {
@@ -105,6 +124,19 @@ export default function RuleEditor() {
         <span>Last modified: {existing?.updatedAt || 'now'}</span>
       </div>
 
+      {/* Device Category */}
+      <div className="mb-6">
+        <span className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium">Device Category</span>
+        <div className="flex gap-3 mt-2">
+          {[{code:'ALL',label:'All Devices'}, ...deviceCategories].map(c => (
+            <label key={c.code} className={`flex items-center gap-1.5 text-[13px] cursor-pointer px-3 py-1.5 border ${deviceCategory === c.code ? 'border-black bg-black text-white' : 'border-border'}`}
+              onClick={() => setDeviceCategory(c.code)}>
+              {c.label}
+            </label>
+          ))}
+        </div>
+      </div>
+
       {/* Suggestions */}
       <div className="mb-6">
         <span className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium">Suggestions</span>
@@ -124,20 +156,22 @@ export default function RuleEditor() {
         <div className="text-[13px] font-medium mb-3">IF</div>
         <div className="space-y-3 ml-4">
           {conditions.map((c, i) => (
-            <div key={i} className="flex items-center gap-2 group">
-              {i > 0 && <span className="text-[11px] text-muted tracking-[0.05em] uppercase w-8">AND</span>}
-              {i === 0 && <span className="w-8" />}
-              <select value={c.field} onChange={e => updateCondition(i,'field',e.target.value)}
-                className="border border-border px-3 py-1.5 text-[13px] bg-white w-[200px]">
-                {fieldOptions.map(f => <option key={f} value={f}>{f}</option>)}
-              </select>
-              <select value={c.op} onChange={e => updateCondition(i,'op',e.target.value)}
-                className="border border-border px-3 py-1.5 text-[13px] bg-white w-[80px]">
-                {operatorOptions.map(o => <option key={o}>{o}</option>)}
-              </select>
-              <input value={c.value} onChange={e => updateCondition(i,'value',e.target.value)}
-                className="border border-border px-3 py-1.5 text-[13px] w-[200px]" placeholder="Value" />
-              <button onClick={() => removeCondition(i)} className="text-muted hover:text-danger opacity-0 group-hover:opacity-100 text-[13px]">×</button>
+            <div key={i} className="group">
+              <div className="flex items-center gap-2">
+                {i > 0 && <span className="text-[11px] text-muted tracking-[0.05em] uppercase w-8">AND</span>}
+                {i === 0 && <span className="w-8" />}
+                <FieldPicker value={c.field} options={allFieldOptions} onChange={v => updateCondition(i,'field',v)} />
+                <select value={c.op} onChange={e => updateCondition(i,'op',e.target.value)}
+                  className="border border-border px-3 py-1.5 text-[13px] bg-white w-[80px]">
+                  {operatorOptions.map(o => <option key={o}>{o}</option>)}
+                </select>
+                <input value={c.value} onChange={e => updateCondition(i,'value',e.target.value)}
+                  className="border border-border px-3 py-1.5 text-[13px] w-[200px]" placeholder="Value" />
+                <button onClick={() => removeCondition(i)} className="text-muted hover:text-danger opacity-0 group-hover:opacity-100 text-[13px]">×</button>
+              </div>
+              {(() => { const info = allFieldOptions.find(f => f.key === c.field); return info?.desc ? (
+                <div className="ml-8 mt-1 text-[11px] text-muted leading-relaxed">{info.desc}</div>
+              ) : null })()}
             </div>
           ))}
           <button onClick={addCondition} className="text-[13px] text-primary hover:underline ml-8">+ Add Condition</button>
@@ -151,7 +185,7 @@ export default function RuleEditor() {
           className="w-full border border-border p-3 text-[13px] font-mono resize-none" />
         <div className="flex items-center gap-3 mt-2">
           <button onClick={runTest} className="px-4 py-1.5 text-[13px] bg-black text-white">Test Rule</button>
-          {testResult && <span className={`text-[13px] font-mono ${testResult === 'HIT' ? 'text-success' : testResult === 'NO MATCH' ? 'text-muted' : 'text-danger'}`}>{testResult}</span>}
+          {testResult && <span className={`text-[13px] font-mono ${testResult.startsWith('HIT') ? 'text-success' : testResult === 'NO MATCH' ? 'text-muted' : 'text-danger'}`}>{testResult}</span>}
         </div>
       </div>
 
@@ -159,6 +193,37 @@ export default function RuleEditor() {
         {saved && <span className="text-[13px] text-success self-center">✓ Rule saved</span>}
         <button onClick={handleSave} className="px-6 py-2 text-[13px] font-medium bg-black text-white">Save Rule</button>
       </div>
+    </div>
+  )
+}
+
+function FieldPicker({ value, options, onChange }) {
+  const [open, setOpen] = useState(false)
+  const groups = options.reduce((acc, f) => { (acc[f.group] = acc[f.group] || []).push(f); return acc }, {})
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(!open)} className="border border-border px-3 py-1.5 text-[13px] bg-white text-left w-[420px] font-mono whitespace-nowrap overflow-x-auto">
+        {value || 'Select field…'}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-border shadow-lg w-[460px] max-h-[400px] overflow-y-auto">
+            {Object.entries(groups).map(([group, fields]) => (
+              <div key={group}>
+                <div className="px-3 py-1.5 text-[10px] text-muted tracking-[0.08em] uppercase font-medium bg-surface sticky top-0">{group}</div>
+                {fields.map(f => (
+                  <div key={f.key} onClick={() => { onChange(f.key); setOpen(false) }}
+                    className={`px-3 py-2 cursor-pointer hover:bg-surface ${f.key === value ? 'bg-primary/5 border-l-2 border-l-primary' : ''}`}>
+                    <div className="font-mono text-[12px]">{f.key}</div>
+                    <div className="text-[11px] text-muted mt-0.5 leading-snug">{f.desc}</div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

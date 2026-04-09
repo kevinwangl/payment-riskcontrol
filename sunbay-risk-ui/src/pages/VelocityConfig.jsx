@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { deviceVelocityTemplates } from '../mock/devices'
 
 const initialRules = [
   { id:'V1', name:'Card Txn Count', key:'vel:{card_hash}:cnt:{window}', windows:['5m','1h','24h'], thresholds:[10,5,20], tenant:'Platform' },
@@ -7,6 +8,7 @@ const initialRules = [
   { id:'V4', name:'Device Txn Count', key:'vel:{device_fp}:cnt:{window}', windows:['1h','24h'], thresholds:[10,30], tenant:'Platform' },
   { id:'V5', name:'Merchant+Card Count', key:'vel:{merchant}:{card_hash}:cnt:{window}', windows:['1h','24h'], thresholds:[3,5], tenant:'Platform' },
   { id:'V6', name:'ISO Custom Card Limit', key:'vel:{card_hash}:cnt:{window}', windows:['1h'], thresholds:[8], tenant:'ISO_2001' },
+  ...deviceVelocityTemplates.map((t,i) => ({ id:`VD${i+1}`, name:t.name, key:t.key, windows:t.windows, thresholds:t.thresholds, tenant:'Platform' })),
 ]
 
 export default function VelocityConfig() {
@@ -60,7 +62,8 @@ export default function VelocityConfig() {
               <td className="py-2 pr-4">
                 <input type="number" value={row.threshold}
                   onChange={e => updateThreshold(row.ruleIdx, row.windowIdx, e.target.value)}
-                  className="w-20 border border-border px-2 py-1 text-[13px] font-mono text-right" />
+                  readOnly={row.rule.tenant === 'Platform'}
+                  className={`w-20 border border-border px-2 py-1 text-[13px] font-mono text-right ${row.rule.tenant === 'Platform' ? 'bg-surface text-muted cursor-not-allowed' : ''}`} />
               </td>
               <td className="py-2 pr-4 text-muted">{row.rule.tenant}</td>
               <td className="py-2 pr-4">

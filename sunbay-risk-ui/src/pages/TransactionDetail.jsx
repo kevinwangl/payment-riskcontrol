@@ -3,8 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom'
 import StatusBadge from '../components/shared/StatusBadge'
 import RiskScore from '../components/shared/RiskScore'
 import { transactions } from '../mock/transactions'
+import { rules } from '../mock/rules'
+import { deviceRiskRules } from '../mock/devices'
 import { fmt } from '../utils/format'
 import MetricTooltip from '../components/shared/MetricTooltip'
+
+const allRules = [...rules, ...deviceRiskRules]
 
 export default function TransactionDetail() {
   const { id } = useParams()
@@ -39,14 +43,66 @@ export default function TransactionDetail() {
       </div>
 
       <Section title="Risk Decision">
-        <R label={<MetricTooltip name="Risk Score"><span>Risk Score</span></MetricTooltip>} value={t.score} /><R label="Reason" value={t.reasonCode || '—'} />
-        <div className="mt-2">
-          <span className="text-[13px] text-muted">Triggered Rules: </span>
-          {t.triggeredRules.length ? t.triggeredRules.map(r => <span key={r} className="font-mono text-[12px] mr-2 px-1.5 py-0.5 bg-surface">{r}</span>) : <span className="text-muted text-[13px]">None</span>}
+        <R label="Reason Code" value={t.reasonCode || '—'} />
+        <div className="mt-2 mb-1 text-[11px] text-muted">
+          Score = Σ(Rule Weight × Match) · 0-40 APPROVE · 41-70 REVIEW · 71+ DECLINE
         </div>
+
+        {t.triggeredRules.length > 0 && (
+          <div className="mt-4">
+            <div className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-2">Triggered Rules ({t.triggeredRules.length})</div>
+            <div className="space-y-2">
+              {t.triggeredRules.map(rId => {
+                const rule = allRules.find(r => r.id === rId)
+                if (!rule) return <div key={rId} className="px-3 py-2 bg-surface text-[13px] font-mono">{rId}</div>
+                const isDevice = rId.startsWith('DEV-')
+                return (
+                  <div key={rId} className="border border-border p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[12px] font-medium">{rId}</span>
+                        <span className="text-[13px]">{rule.name}</span>
+                        {isDevice && <span className="text-[10px] px-1.5 py-0.5 bg-primary/10 text-primary">DEVICE</span>}
+                      </div>
+                      <StatusBadge status={rule.action?.decision || rule.risk_level || ''} />
+                    </div>
+                    <div className="font-mono text-[11px] text-muted mt-1.5 bg-surface px-2 py-1">{rule.condition}</div>
+                    <div className="flex gap-4 mt-1.5 text-[11px] text-muted">
+                      <span>Reason: <span className="font-mono">{rule.reasonCode || rule.reason_code}</span></span>
+                      <span>Tenant: {rule.tenant}</span>
+                      {rule.priority !== undefined && <span>Priority: {rule.priority}</span>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        {t.triggeredRules.length === 0 && <div className="mt-2 text-[13px] text-muted">No rules triggered — transaction passed all checks.</div>}
       </Section>
 
-      <div className="mt-4 text-[13px] text-muted">Network: {t.ip} · Device: {t.deviceFingerprint}</div>
+      {t.device && (
+      <Section title="Device Information">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-2">
+          <R label="Device ID" value={t.device.device_id} />
+          <R label="Category" value={t.device.device_category} />
+          <R label="Acceptance" value={t.device.acceptance_method} />
+          <R label="Model" value={`${t.device.manufacturer} ${t.device.model}`} />
+          {t.device.os && <R label="OS" value={`${t.device.os} ${t.device.os_version}`} />}
+          {t.device.app_version && <R label="App Version" value={t.device.app_version} />}
+          {t.device.attestation && <R label="Attestation" value={t.device.attestation.status} color={t.device.attestation.status === 'VERIFIED' ? 'text-success' : 'text-danger'} />}
+          {t.device.security?.tee_available !== undefined && <R label="TEE" value={t.device.security.tee_available ? 'Available' : 'Unavailable'} />}
+          {t.device.security?.is_rooted !== undefined && <R label="Root" value={t.device.security.is_rooted ? 'Detected' : 'Clean'} color={t.device.security.is_rooted ? 'text-danger' : 'text-success'} />}
+          {t.device.security?.debug_mode !== undefined && <R label="Debug Mode" value={t.device.security.debug_mode ? 'On' : 'Off'} color={t.device.security.debug_mode ? 'text-danger' : ''} />}
+          {t.device.security?.is_emulator !== undefined && <R label="Emulator" value={t.device.security.is_emulator ? 'Detected' : 'No'} color={t.device.security.is_emulator ? 'text-danger' : ''} />}
+          {t.device.security?.hook_framework_detected !== undefined && <R label="Hook Framework" value={t.device.security.hook_framework_detected ? 'Detected' : 'No'} color={t.device.security.hook_framework_detected ? 'text-danger' : ''} />}
+          {t.device.firmware_version && <R label="Firmware" value={t.device.firmware_version} />}
+          {t.device.pts_cert_expiry && <R label="PTS Expiry" value={t.device.pts_cert_expiry} />}
+          {t.device.location && <R label="Location" value={`${t.device.location.lat.toFixed(4)}, ${t.device.location.lng.toFixed(4)}`} />}
+        </div>
+      </Section>
+      )}
+
     </div>
   )
 }

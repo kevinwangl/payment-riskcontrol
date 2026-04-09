@@ -2,8 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react'
 import RiskScore from '../components/shared/RiskScore'
 import StatusBadge from '../components/shared/StatusBadge'
 import { reviewQueue as initialQueue } from '../mock/reviewQueue'
+import { rules } from '../mock/rules'
+import { deviceRiskRules } from '../mock/devices'
 import { fmt } from '../utils/format'
 import MetricTooltip from '../components/shared/MetricTooltip'
+
+const allRules = [...rules, ...deviceRiskRules]
 
 export default function ReviewWorkbench() {
   const [queue, setQueue] = useState(initialQueue)
@@ -68,7 +72,6 @@ export default function ReviewWorkbench() {
               <div className="text-[32px] font-mono">{fmt.usd(current.amount)}</div>
               <div className="text-[13px] text-muted mt-1">{current.id} · {fmt.datetime(current.timestamp)}</div>
               <div className="flex gap-2 mt-3">
-                {current.triggeredRules.map(r => <span key={r} className="px-2 py-0.5 text-[11px] border border-danger text-danger">{r}</span>)}
                 {current.entryMode === 'CNP' && <span className="px-2 py-0.5 text-[11px] border border-border">CNP</span>}
                 {current.cardType === 'PREPAID' && <span className="px-2 py-0.5 text-[11px] border border-warning text-warning">Prepaid</span>}
               </div>
@@ -78,6 +81,31 @@ export default function ReviewWorkbench() {
               <div className="mt-1"><RiskScore score={current.score} /></div>
             </div>
           </div>
+
+          {/* Triggered Rules */}
+          {current.triggeredRules.length > 0 && (
+          <div className="mb-8 border border-danger/20 bg-danger/[0.02] p-4">
+            <div className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-3">
+              Triggered Rules <span className="text-danger">({current.triggeredRules.length})</span>
+            </div>
+            {current.triggeredRules.map(rId => {
+              const rule = allRules.find(r => r.id === rId)
+              if (!rule) return <div key={rId} className="font-mono text-[12px] py-1">{rId}</div>
+              return (
+                <div key={rId} className="py-2 border-b border-border/50 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] font-medium">{rId}</span>
+                    <span className="text-[12px]">{rule.name}</span>
+                    <StatusBadge status={rule.action?.decision || rule.risk_level || ''} />
+                    {rId.startsWith('DEV-') && <span className="text-[10px] px-1.5 py-0.5 bg-primary/10 text-primary">DEVICE</span>}
+                  </div>
+                  <div className="font-mono text-[10px] text-muted mt-1">{rule.condition}</div>
+                </div>
+              )
+            })}
+            <div className="text-[10px] text-muted mt-2">Score = Σ(Rule Weight × Match) · 0-40 APPROVE · 41-70 REVIEW · 71+ DECLINE</div>
+          </div>
+          )}
 
           <div className="grid grid-cols-2 gap-8 mb-8">
             <Section title="Network & Device">
@@ -107,6 +135,24 @@ export default function ReviewWorkbench() {
               <Row label="Shipping distance" value={`${current.shippingAddress.distance} miles`} color={current.shippingAddress.distance > 500 ? 'text-danger' : ''} />
             </Section>
           </div>
+
+          {current.device && (
+          <div className="mb-8 border border-border p-4">
+            <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-3 pb-2 border-b border-border">Device Context</h3>
+            <div className="grid grid-cols-2 gap-x-8 gap-y-2">
+              <Row label="Device ID" value={current.device.device_id} />
+              <Row label="Category" value={current.device.device_category} />
+              <Row label="Method" value={current.device.acceptance_method} />
+              <Row label="Model" value={`${current.device.manufacturer} ${current.device.model}`} />
+              {current.device.attestation && <Row label="Attestation" value={current.device.attestation.status} color={current.device.attestation.status === 'VERIFIED' ? 'text-success' : 'text-danger'} />}
+              {current.device.security?.tee_available !== undefined && <Row label="TEE" value={current.device.security.tee_available ? 'Available' : 'Unavailable'} color={current.device.security.tee_available ? 'text-success' : 'text-danger'} />}
+              {current.device.security?.is_rooted !== undefined && <Row label="Root/Jailbreak" value={current.device.security.is_rooted ? 'Detected' : 'Not Detected'} color={current.device.security.is_rooted ? 'text-danger' : 'text-success'} />}
+              {current.device.firmware_version && <Row label="Firmware" value={current.device.firmware_version} />}
+              {current.device.pts_cert_expiry && <Row label="PTS Cert Expiry" value={current.device.pts_cert_expiry} />}
+              {current.device.location && <Row label="Location" value={`${current.device.location.lat.toFixed(4)}, ${current.device.location.lng.toFixed(4)} (${current.device.location.source})`} />}
+            </div>
+          </div>
+          )}
         </div>
 
         {/* Bottom action bar */}
