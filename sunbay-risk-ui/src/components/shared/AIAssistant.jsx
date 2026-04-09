@@ -109,7 +109,7 @@ export default function AIAssistant() {
     <>
       {/* Lightning seam trigger on right edge */}
       {!open && (
-        <div className="fixed right-0 top-0 h-full z-50 group cursor-pointer" style={{ width: 48 }} onClick={toggle}>
+        <div className="fixed right-0 top-12 h-[calc(100%-48px)] z-40 group cursor-pointer" style={{ width: 48 }} onClick={toggle}>
           <LightningSeam />
           {/* AI label on hover */}
           <div className="absolute right-3 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300 group-hover:-translate-x-1 z-10"
@@ -121,7 +121,7 @@ export default function AIAssistant() {
       )}
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full flex flex-col z-20 transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
+      <div className="fixed top-12 right-0 h-[calc(100%-48px)] flex flex-col z-40 transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
         style={{ width: 420, transform: open ? 'translateX(0)' : 'translateX(100%)', background: 'var(--bg, #fff)', borderLeft: '1px solid var(--border)' }}>
 
         {/* Glow edge + burst + lightning */}

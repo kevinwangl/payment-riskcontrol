@@ -38,7 +38,7 @@ export default function AppShell() {
         {/* Main content area — shrinks when AI opens */}
         <div className="flex-1 min-w-0 flex flex-col transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
           style={{ marginRight: aiOpen ? 420 : 0 }}>
-          <header className="border-b border-border flex items-center h-12 px-6 gap-8 sticky top-0 bg-white z-30">
+          <header className="border-b border-border flex items-center h-12 px-6 gap-8 sticky top-0 z-50" style={{ background: 'var(--bg, #fff)' }}>
             <NavLink to="/dashboard" className="font-semibold text-sm tracking-wide flex items-center gap-1.5">
               <span className="text-primary">◆</span> SUNBAY
             </NavLink>
