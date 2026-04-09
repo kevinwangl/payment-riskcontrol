@@ -9,13 +9,15 @@ payment-riskcontrol/
 ├── docs/
 │   ├── system-design-v3.md          # Backend system design (current)
 │   ├── system-design-v2.md          # Backend system design (previous)
+│   ├── device-risk-design.md        # Device risk extension design
+│   ├── device-risk-frontend-changelog.md  # Device risk frontend changelog
 │   ├── frontend-prd.md              # Frontend PRD (24 pages, 5 roles)
 │   └── prototype-dev-plan.md        # Prototype development plan
 ├── sunbay-risk-ui/                   # Frontend prototype (React)
 │   ├── src/
 │   │   ├── pages/                   # 24 page components
 │   │   ├── components/              # Shared UI components
-│   │   ├── mock/                    # Mock data (30 rules, 200 txns, etc.)
+│   │   ├── mock/                    # Mock data (30+30 rules, 200 txns, 8 devices)
 │   │   └── index.css                # 3 themes + animations
 │   └── package.json
 └── stitch_utilitarian_terminal_prd/  # Reference design assets
@@ -28,6 +30,7 @@ Three-phase risk control architecture:
 - **Pre-Transaction**: KYC/KYB, MCC admission, onboarding scorecard, trial period
 - **In-Transaction**: Rule engine + Velocity + Blacklist + ML scoring + Link analysis, P99 < 50ms
 - **Post-Transaction**: Chargeback management, merchant lifecycle, case management, compliance
+- **Device Risk**: Device attestation, geofence, SoftPOS security (COTS/Dedicated/POS), 30 default rules
 
 Key tech decisions:
 - Event bus: Amazon EventBridge + SQS + Lambda

@@ -189,3 +189,27 @@
 - [ ] 30 条规则覆盖 V3 全部风控场景
 - [ ] 5 个模型版本覆盖全状态（训练中/Shadow/灰度/线上/已下线）
 - [ ] `npm run build` 无报错
+
+---
+
+### Step 16: 设备风控前端扩展（基于 device-risk-design.md）
+
+> 完成日期: 2026-04-09 | 详细变更日志: device-risk-frontend-changelog.md
+
+- [x] `mock/devices.js` — 设备类别/受理方式/字段映射/8台设备/30条规则/4个Velocity模板
+- [x] `mock/transactions.js` — 每笔交易增加嵌套 device 对象（attestation/security/location）
+- [x] `mock/rules.js` — fieldOptions 改为带分组/描述的对象数组（24个基础字段）
+- [x] `mock/dashboard.js` — 新增 4 组设备趋势数据（鉴证/围栏/类别/规则触发）
+- [x] Rule Editor — Device Category 选择器 + FieldPicker 自定义下拉（分组+说明）
+- [x] Velocity Config — 4 个设备计数器模板 + Platform 只读保护
+- [x] Review Workbench — 触发规则高亮卡片 + Device Context 面板
+- [x] Transaction Ledger — 结构化 TxnInspector（规则+设备+折叠JSON）+ Link 跳转
+- [x] Transaction Detail — 规则详情卡片 + 设备信息区块（含安全字段）+ 分数公式
+- [x] Merchant Detail — 关联设备列表（按 merchant_id 过滤，无设备时隐藏）
+- [x] Dashboard — Device Risk 独立区块（4 KPI + 4 趋势图 + MetricTooltip）
+- [x] Reports — Device Risk Tab（KPI/饼图/鉴证趋势/围栏趋势+表格/规则表格）
+- [x] StatusBadge — 新增 BLOCKED/SUSPENDED/ACTIVE/TRIAL/OBSERVATION/FROZEN/ALERT/WARNING/HIGH_RISK
+- [x] MetricTooltip — 新增 4 个设备指标公式说明
+- [x] 两轮系统性质量检查 + 修复（数据结构/UX/信息层级/交互逻辑）
+
+自检：`npm run build` 通过，所有设备相关页面渲染正常，数据结构与设计方案一致
