@@ -1,0 +1,9 @@
+{
+  "name": "default",
+  "description": "SUNBAY Payment Risk Control 项目默认 agent",
+  "toolsSettings": {
+    "subagent": {
+      "trustedAgents": ["*"]
+    }
+  }
+}

@@ -1,0 +1,17 @@
+export const merchants = [
+  { id:'M_1001', name:'QuickMart', isoId:'ISO_2001', mcc:'5411', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+2', singleTxnLimit:10000, dailyLimit:100000, monthlyLimit:500000, chargebackRate:0.15, require3ds:false },
+  { id:'M_1002', name:'TechStore', isoId:'ISO_2001', mcc:'5999', riskLevel:'MEDIUM', status:'ACTIVE', settlementCycle:'T+3', singleTxnLimit:5000, dailyLimit:50000, monthlyLimit:200000, chargebackRate:0.62, require3ds:false },
+  { id:'M_1003', name:'GrandHotel', isoId:'ISO_2001', mcc:'7011', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+2', singleTxnLimit:10000, dailyLimit:200000, monthlyLimit:500000, chargebackRate:0.08, require3ds:false },
+  { id:'M_1004', name:'FoodHub', isoId:'ISO_2002', mcc:'5812', riskLevel:'MEDIUM', status:'ACTIVE', settlementCycle:'T+3', singleTxnLimit:5000, dailyLimit:30000, monthlyLimit:200000, chargebackRate:0.45, require3ds:false },
+  { id:'M_1005', name:'JewelBox', isoId:'ISO_2002', mcc:'5944', riskLevel:'HIGH', status:'ACTIVE', settlementCycle:'T+7', singleTxnLimit:2000, dailyLimit:10000, monthlyLimit:50000, chargebackRate:0.95, require3ds:true },
+  { id:'M_1006', name:'LuxRetail', isoId:'ISO_2001', mcc:'5999', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+2', singleTxnLimit:10000, dailyLimit:150000, monthlyLimit:500000, chargebackRate:0.05, require3ds:false },
+  { id:'M_1007', name:'FastFood', isoId:'ISO_2001', mcc:'5812', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+3', singleTxnLimit:2500, dailyLimit:15000, monthlyLimit:100000, chargebackRate:0.0, require3ds:false },
+  { id:'M_1008', name:'DrugStore', isoId:'ISO_2001', mcc:'5411', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+2', singleTxnLimit:5000, dailyLimit:50000, monthlyLimit:250000, chargebackRate:0.0, require3ds:false },
+  { id:'M_1009', name:'GasStation', isoId:'ISO_2002', mcc:'5411', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+2', singleTxnLimit:10000, dailyLimit:80000, monthlyLimit:500000, chargebackRate:0.12, require3ds:false },
+  { id:'M_1010', name:'OnlineShop', isoId:'ISO_2001', mcc:'5999', riskLevel:'MEDIUM', status:'OBSERVATION', settlementCycle:'T+3', singleTxnLimit:3000, dailyLimit:20000, monthlyLimit:100000, chargebackRate:0.78, require3ds:false },
+  { id:'M_1011', name:'TravelCo', isoId:'ISO_2001', mcc:'7011', riskLevel:'HIGH', status:'OBSERVATION', settlementCycle:'T+7', singleTxnLimit:2000, dailyLimit:10000, monthlyLimit:50000, chargebackRate:1.2, require3ds:true },
+  { id:'M_1012', name:'GameZone', isoId:'ISO_2002', mcc:'5966', riskLevel:'HIGH', status:'FROZEN', settlementCycle:'T+7', singleTxnLimit:1000, dailyLimit:5000, monthlyLimit:20000, chargebackRate:1.8, require3ds:true },
+  { id:'M_1013', name:'SubShop', isoId:'ISO_2001', mcc:'5812', riskLevel:'MEDIUM', status:'ACTIVE', settlementCycle:'T+3', singleTxnLimit:5000, dailyLimit:40000, monthlyLimit:200000, chargebackRate:0.35, require3ds:false },
+  { id:'M_1014', name:'PetCare', isoId:'ISO_2001', mcc:'5999', riskLevel:'LOW', status:'ACTIVE', settlementCycle:'T+2', singleTxnLimit:5000, dailyLimit:25000, monthlyLimit:250000, chargebackRate:0.0, require3ds:false },
+  { id:'M_1015', name:'AutoParts', isoId:'ISO_2002', mcc:'5999', riskLevel:'HIGH', status:'FROZEN', settlementCycle:'T+7', singleTxnLimit:0, dailyLimit:0, monthlyLimit:0, chargebackRate:2.5, require3ds:true },
+]
