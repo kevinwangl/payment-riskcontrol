@@ -616,7 +616,14 @@ enum ConditionType {
     VELOCITY, VELOCITY_AMOUNT, BLACKLIST, WHITELIST, GREYLIST,
     LINK_COUNT, GEO_DISTANCE,
     // 验证结果
-    AVS_RESULT, CVV_RESULT
+    AVS_RESULT, CVV_RESULT,
+    // 设备相关（第十章）
+    DEVICE_STRING,      // 字符串字段: attestation.status, category, status
+    DEVICE_BOOLEAN,     // 布尔字段: is_rooted, tee_available, tamper_detected
+    DEVICE_DATE,        // 日期比较: pts_cert_expiry < now()
+    DEVICE_VERSION,     // 版本比较: firmware_version < min_version
+    DEVICE_HOURS_SINCE, // 时间差: hours_since(attestation.verified_at) > 24
+    DEVICE_NULL         // 空值检测: location == null
 }
 
 // 条件配置结构
@@ -899,7 +906,7 @@ class AmountConditionFactory implements ConditionFactory {
 
 ### 6.3 在规则引擎中的调用
 
-通过 DSL 函数调用：`velocity('card_number', '1h') > 5`，规则引擎执行时实时查询 Redis。
+通过条件组合配置调用：`{"type": "VELOCITY", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5}`，规则引擎执行时实时查询 Redis。
 
 ---
 
@@ -977,7 +984,7 @@ Step 3: 执行决策类规则 (APPROVE/REVIEW/DECLINE)
 阈值: 0-49 APPROVE / 50-70 REVIEW / 71+ DECLINE
 ```
 
-优势：无需两套执行路径，评分规则和决策规则共享同一套 DSL、编译缓存、多租户编排能力。第二期切换为 ML 模型后，`ADD_SCORE` 规则自然退役，risk_score 改由 SageMaker Endpoint 提供。
+优势：无需两套执行路径，评分规则和决策规则共享同一套条件组合执行框架、缓存、多租户编排能力。第二期切换为 ML 模型后，`ADD_SCORE` 规则自然退役，risk_score 改由 SageMaker Endpoint 提供。
 
 ### 8.3 第二期：ML 模型
 
@@ -1056,40 +1063,51 @@ Step 3: 执行决策类规则 (APPROVE/REVIEW/DECLINE)
 
 ### 10.3 设备风控规则
 
-设备风控规则复用规则引擎（第五章）的 DSL 和执行框架，通过 `device.*` 字段路径访问设备上下文。
+设备风控规则复用规则引擎（第五章）的原子条件组合执行框架，通过 `device.*` 字段路径访问设备上下文。
 
-按设备类别分组的核心规则：
+按设备类别分组的核心规则（条件列为简写，实际存储为条件组合 JSON）：
 
 **Certified POS：**
 
 | 规则 | 条件 | 风险等级 | 说明 |
 |------|------|---------|------|
-| PTS 证书过期 | `device.pts_cert_expiry < now()` | HIGH_RISK | 不再满足安全标准 |
-| 物理篡改触发 | `device.tamper_detected == true` | HIGH_RISK | 可能被安装窃取器 |
-| 固件版本过低 | `version_compare(device.firmware_version, min_version) < 0` | WARNING | 存在已知漏洞 |
-| 未知序列号 | `NOT whitelist('serial_number', device.serial_number)` | HIGH_RISK | 非注册设备 |
+| PTS 证书过期 | `DEVICE_DATE < now()` · field: pts_cert_expiry | HIGH_RISK | 不再满足安全标准 |
+| 物理篡改触发 | `DEVICE_BOOLEAN == true` · field: tamper_detected | HIGH_RISK | 可能被安装窃取器 |
+| 固件版本过低 | `DEVICE_VERSION < min_version` · field: firmware_version | WARNING | 存在已知漏洞 |
+| 未知序列号 | `WHITELIST(serial_number)` · 取反 | HIGH_RISK | 非注册设备 |
+
+条件组合 JSON 示例（PTS 证书过期）：
+
+```json
+{
+  "conditions": [
+    {"type": "DEVICE_DATE", "field": "device.pts_cert_expiry", "operator": "<", "value": "now()"}
+  ],
+  "logic": "AND"
+}
+```
 
 **COTS / Dedicated Device：**
 
 | 规则 | 条件 | 风险等级 | 说明 |
 |------|------|---------|------|
-| 完整性证明失败 | `device.attestation.status == 'FAILED'` | HIGH_RISK | 设备可能被篡改 |
-| Root/越狱 | `device.security.is_rooted == true` | HIGH_RISK | 安全控制可被绕过 |
-| TEE 不可用 | `device.security.tee_available == false` | HIGH_RISK (COTS) / WARNING (Dedicated) | SoftPOS 密钥存储依赖 TEE |
-| 模拟器检测 | `device.security.is_emulator == true` | HIGH_RISK | 虚拟设备欺诈 |
-| Hook 框架 | `device.security.hook_framework == true` | HIGH_RISK | 运行时篡改 |
-| 调试模式 | `device.security.debug_mode == true` | WARNING | 生产环境不应开启 |
-| 证明过期 | `hours_since(device.attestation.verified_at) > 24` | WARNING | 需要刷新证明 |
+| 完整性证明失败 | `DEVICE_STRING == 'FAILED'` · field: attestation.status | HIGH_RISK | 设备可能被篡改 |
+| Root/越狱 | `DEVICE_BOOLEAN == true` · field: is_rooted | HIGH_RISK | 安全控制可被绕过 |
+| TEE 不可用 | `DEVICE_BOOLEAN == false` · field: tee_available | HIGH_RISK (COTS) / WARNING (Dedicated) | SoftPOS 密钥存储依赖 TEE |
+| 模拟器检测 | `DEVICE_BOOLEAN == true` · field: is_emulator | HIGH_RISK | 虚拟设备欺诈 |
+| Hook 框架 | `DEVICE_BOOLEAN == true` · field: hook_framework | HIGH_RISK | 运行时篡改 |
+| 调试模式 | `DEVICE_BOOLEAN == true` · field: debug_mode | WARNING | 生产环境不应开启 |
+| 证明过期 | `DEVICE_HOURS_SINCE > 24` · field: attestation.verified_at | WARNING | 需要刷新证明 |
 
 **通用规则（所有设备类别）：**
 
 | 规则 | 条件 | 风险等级 | 说明 |
 |------|------|---------|------|
-| 设备已封禁 | `device.status == 'BLOCKED'` | HIGH_RISK | 直接拒绝 |
-| 不可能旅行 | `geo_distance(device.prev_location, device.location) > 500 AND time_diff < 30` | HIGH_RISK | 30 分钟内移动 500km+ |
-| 设备交易频率 | `velocity('device_id','1h') > 50` | HIGH_RISK | 异常高频 |
-| 设备多卡 | `link_count('device_id','card','1h') > 10` | HIGH_RISK | 同设备大量不同卡 |
-| 定位缺失 | `device.location == null` | WARNING | 无法做地理围栏校验 |
+| 设备已封禁 | `DEVICE_STRING == 'BLOCKED'` · field: status | HIGH_RISK | 直接拒绝 |
+| 不可能旅行 | `GEO_DISTANCE > 500` · params: {from: prev_location, minutes: 30} | HIGH_RISK | 30 分钟内移动 500km+ |
+| 设备交易频率 | `VELOCITY > 50` · params: {dimension: device_id, window: 1h} | HIGH_RISK | 异常高频 |
+| 设备多卡 | `LINK_COUNT > 10` · params: {from: device_id, to: card, window: 1h} | HIGH_RISK | 同设备大量不同卡 |
+| 定位缺失 | `DEVICE_NULL == true` · field: location | WARNING | 无法做地理围栏校验 |
 
 ### 10.4 设备风控与规则引擎集成
 
@@ -1125,24 +1143,24 @@ class TransactionContext {
 }
 ```
 
-DSL 字段映射扩展：
+条件字段映射扩展：
 
-| DSL 字段路径 | Context 属性 | 适用设备 |
-|-------------|-------------|---------|
-| `device.category` | `deviceCategory` | ALL |
-| `device.status` | `deviceStatus` | ALL |
-| `device.firmware_version` | `firmwareVersion` | POS |
-| `device.pts_cert_expiry` | `ptsCertExpiry` | POS |
-| `device.tamper_detected` | `tamperDetected` | POS |
-| `device.serial_number` | `serialNumber` | POS |
-| `device.attestation.status` | `attestationStatus` | COTS / Dedicated |
-| `device.security.is_rooted` | `isRooted` | COTS / Dedicated |
-| `device.security.tee_available` | `teeAvailable` | COTS / Dedicated |
-| `device.security.debug_mode` | `debugMode` | COTS / Dedicated |
-| `device.security.is_emulator` | `isEmulator` | COTS / Dedicated |
-| `device.security.hook_framework` | `hookFrameworkDetected` | COTS / Dedicated |
-| `device.location.lat` | `locationLat` | ALL |
-| `device.location.lng` | `locationLng` | ALL |
+| 条件字段路径 | Context 属性 | 条件类型 | 适用设备 |
+|-------------|-------------|---------|---------|
+| `device.category` | `deviceCategory` | DEVICE_STRING | ALL |
+| `device.status` | `deviceStatus` | DEVICE_STRING | ALL |
+| `device.firmware_version` | `firmwareVersion` | DEVICE_VERSION | POS |
+| `device.pts_cert_expiry` | `ptsCertExpiry` | DEVICE_DATE | POS |
+| `device.tamper_detected` | `tamperDetected` | DEVICE_BOOLEAN | POS |
+| `device.serial_number` | `serialNumber` | WHITELIST | POS |
+| `device.attestation.status` | `attestationStatus` | DEVICE_STRING | COTS / Dedicated |
+| `device.security.is_rooted` | `isRooted` | DEVICE_BOOLEAN | COTS / Dedicated |
+| `device.security.tee_available` | `teeAvailable` | DEVICE_BOOLEAN | COTS / Dedicated |
+| `device.security.debug_mode` | `debugMode` | DEVICE_BOOLEAN | COTS / Dedicated |
+| `device.security.is_emulator` | `isEmulator` | DEVICE_BOOLEAN | COTS / Dedicated |
+| `device.security.hook_framework` | `hookFrameworkDetected` | DEVICE_BOOLEAN | COTS / Dedicated |
+| `device.location.lat` | `locationLat` | GEO_DISTANCE | ALL |
+| `device.location.lng` | `locationLng` | GEO_DISTANCE | ALL |
 
 ### 10.5 设备监控指标
 
@@ -1531,7 +1549,7 @@ CREATE TABLE risk_rules (
     rule_name       VARCHAR(128) NOT NULL,
     priority        INT NOT NULL DEFAULT 100,
     entry_mode      VARCHAR(10)              COMMENT 'CP/CNP/ALL',
-    condition_expr  TEXT NOT NULL,
+    condition_expr  TEXT NOT NULL             COMMENT '条件组合JSON: {conditions:[...], logic:"AND/OR"}',
     action          VARCHAR(20) NOT NULL     COMMENT 'APPROVE/REVIEW/DECLINE/ADD_SCORE',
     score_delta     INT                      COMMENT 'ADD_SCORE 时的加分值',
     suggestions     JSON                     COMMENT '["REQUIRE_3DS"]',
@@ -1723,7 +1741,7 @@ LEFT JOIN (
 交易请求进入
     │
     ├─ 并行分支 A: 规则引擎编排执行 (~10ms)
-    │     逐条求值 DSL 表达式 (内存, ~1ms/条)
+    │     逐条求值原子条件组合 (内存, ~1ms/条)
     │     表达式内部按需调用子引擎:
     │     ├── 黑白名单查询 (Bloom Filter + Redis, ~1ms)
     │     ├── Velocity 查询 & 更新 (Redis, ~2ms)
