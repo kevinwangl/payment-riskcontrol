@@ -50,8 +50,9 @@ export default function RuleEditor() {
   const [decision, setDecision] = useState(existing?.action?.decision || 'DECLINE')
   const [suggestions, setSuggestions] = useState(existing?.action?.suggestions || [])
   const [conditions, setConditions] = useState(
-    existing ? parseConditions(existing.condition) : [{ field:'txn.amount', op:'>', value:'1000' }]
+    existing?.conditions || [{ field:'txn.amount', op:'>', value:'1000' }]
   )
+  const [logic, setLogic] = useState(existing?.logic || 'AND')
   const [deviceCategory, setDeviceCategory] = useState(existing?.device_category || 'ALL')
   const [testJson, setTestJson] = useState('')
   const [testResult, setTestResult] = useState(null)
@@ -79,27 +80,36 @@ export default function RuleEditor() {
     if (!testJson.trim()) { setTestResult('ENTER JSON'); return }
     try {
       const txn = JSON.parse(testJson)
-      const hit = conditions.every(c => {
-        // Resolve nested field path like "txn.amount" or "card.issuer_country"
-        const fieldPath = c.field.replace(/['"]/g, '')
-        // Skip function-style fields (velocity, link_count, etc) — always treat as matching for demo
-        if (fieldPath.includes('(')) return true
-        const val = fieldPath.split('.').reduce((o, k) => o?.[k], txn)
-        if (val === undefined) return false
-        const numVal = Number(val), numTarget = Number(c.value)
-        const strVal = String(val).replace(/['"]/g, ''), strTarget = c.value.replace(/['"]/g, '')
-        if (c.op === '>') return numVal > numTarget
-        if (c.op === '<') return numVal < numTarget
-        if (c.op === '>=') return numVal >= numTarget
-        if (c.op === '<=') return numVal <= numTarget
-        if (c.op === '==') return strVal === strTarget
-        if (c.op === '!=') return strVal !== strTarget
-        if (c.op === 'IN') return c.value.replace(/[\[\]'"\s]/g, '').split(',').includes(strVal)
-        if (c.op === 'NOT IN') return !c.value.replace(/[\[\]'"\s]/g, '').split(',').includes(strVal)
-        return false
-      })
+      let hit
+      if (logic === 'AND') {
+        hit = conditions.every(c => evaluateCondition(c, txn))
+      } else if (logic === 'OR') {
+        hit = conditions.some(c => evaluateCondition(c, txn))
+      } else {
+        hit = conditions.every(c => evaluateCondition(c, txn)) // default to AND
+      }
       setTestResult(hit ? 'HIT ✓' : 'NO MATCH')
     } catch (e) { setTestResult('INVALID JSON: ' + e.message) }
+  }
+
+  const evaluateCondition = (c, txn) => {
+    // Resolve nested field path like "txn.amount" or "card.issuer_country"
+    const fieldPath = c.field.replace(/['"]/g, '')
+    // Skip function-style fields (velocity, link_count, etc) — always treat as matching for demo
+    if (fieldPath.includes('(')) return true
+    const val = fieldPath.split('.').reduce((o, k) => o?.[k], txn)
+    if (val === undefined) return false
+    const numVal = Number(val), numTarget = Number(c.value)
+    const strVal = String(val).replace(/['"]/g, ''), strTarget = c.value.replace(/['"]/g, '')
+    if (c.op === '>') return numVal > numTarget
+    if (c.op === '<') return numVal < numTarget
+    if (c.op === '>=') return numVal >= numTarget
+    if (c.op === '<=') return numVal <= numTarget
+    if (c.op === '==') return strVal === strTarget
+    if (c.op === '!=') return strVal !== strTarget
+    if (c.op === 'IN') return c.value.replace(/[\[\]'"\s]/g, '').split(',').includes(strVal)
+    if (c.op === 'NOT IN') return !c.value.replace(/[\[\]'"\s]/g, '').split(',').includes(strVal)
+    return false
   }
 
   return (
@@ -153,12 +163,19 @@ export default function RuleEditor() {
       {/* Conditions */}
       <div className="border-t border-border pt-6 mb-6">
         <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-4">Conditions</h3>
-        <div className="text-[13px] font-medium mb-3">IF</div>
+        <div className="flex items-center gap-4 mb-3">
+          <div className="text-[13px] font-medium">IF</div>
+          <select value={logic} onChange={e => setLogic(e.target.value)}
+            className="border border-border px-3 py-1.5 text-[13px] bg-white">
+            <option value="AND">ALL conditions match (AND)</option>
+            <option value="OR">ANY condition matches (OR)</option>
+          </select>
+        </div>
         <div className="space-y-3 ml-4">
           {conditions.map((c, i) => (
             <div key={i} className="group">
               <div className="flex items-center gap-2">
-                {i > 0 && <span className="text-[11px] text-muted tracking-[0.05em] uppercase w-8">AND</span>}
+                {i > 0 && <span className="text-[11px] text-muted tracking-[0.05em] uppercase w-8">{logic}</span>}
                 {i === 0 && <span className="w-8" />}
                 <FieldPicker value={c.field} options={allFieldOptions} onChange={v => updateCondition(i,'field',v)} />
                 <select value={c.op} onChange={e => updateCondition(i,'op',e.target.value)}
@@ -226,17 +243,4 @@ function FieldPicker({ value, options, onChange }) {
       )}
     </div>
   )
-}
-
-function parseConditions(expr) {
-  if (!expr) return [{ field: 'txn.amount', op: '>', value: '1000' }]
-  // Split on AND but not inside parentheses/quotes
-  const parts = expr.split(/\s+AND\s+/)
-  return parts.map(p => {
-    // Try standard comparison: field op value
-    const m = p.trim().match(/^(.+?)\s*(>=|<=|>|<|==|!=|NOT IN|IN)\s*(.+)$/)
-    if (m) return { field: m[1].trim(), op: m[2].trim(), value: m[3].trim().replace(/^['"]|['"]$/g, '') }
-    // Fallback: treat whole expression as a field == true
-    return { field: p.trim(), op: '==', value: 'true' }
-  })
 }

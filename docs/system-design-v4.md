@@ -14,7 +14,7 @@
   - 三、事后风控 — 监控与数据回流
   - 四、阶段联动机制
 - 第二部分：系统核心能力
-  - 五、规则引擎（含 5.4 表达式执行核心）
+  - 五、规则引擎
   - 六、Velocity 引擎
   - 七、黑白名单引擎
   - 八、评分模型
@@ -47,7 +47,7 @@
 ### 1.2 核心目标
 
 - 实时交易风控决策，P99 延迟 < 50ms
-- 多租户分层规则体系，ISO/ISV 可自助配置规则和表达式
+- 分层级规则体系，ISO/ISV 可自助配置规则
 - Chargeback 数据导入与争议流程跟踪，驱动拒付率监控和模型标签回流
 - 人机协同标注 + 模型自动训练的智能风控闭环
 - 满足 PCI DSS 审计要求
@@ -55,7 +55,7 @@
 ### 1.3 业务规模
 
 - 日交易量：10 万 ～ 50 万笔
-- 租户层级：Platform → ISO/ISV → Merchant
+- 层级结构：Platform → ISO/ISV → Merchant
 - 卡组织对接：通过 Processor（非直连）
 
 ### 1.4 风控系统边界
@@ -112,10 +112,10 @@
     │  │ 第一期: 规则引擎统一执行（无并行分支）                      │
     │  │                                                         │
     │  │   Step 1: 执行 ADD_SCORE 评分规则，累加 risk_score        │
-    │  │           (复用规则引擎，详见第八章 8.2 节)                 │
+    │  │           (复用规则引擎，详见第八章评分模型)                 │
     │  │   Step 2: risk_score 回填 TransactionContext              │
     │  │   Step 3: 执行决策规则 (APPROVE/REVIEW/DECLINE)                   │
-    │  │           表达式内部按需调用子引擎：                        │
+    │  │           条件内部按需调用子引擎：                        │
     │  │           ├── velocity()  → Velocity 引擎 (第六章)        │
     │  │           ├── blacklist()/whitelist()/greylist()          │
     │  │           │   → 黑白名单引擎 (第七章, Bloom+Redis)        │
@@ -171,7 +171,7 @@
 
 `suggestions` 来源：
 
-风控建议与主决策规则直接绑定，在 DSL 规则命中时，Action 属性中直接携带 suggestions：
+风控建议与主决策规则直接绑定，在规则命中时，Action 属性中直接携带 suggestions：
 
 典型规则与建议绑定示例：
 
@@ -179,7 +179,11 @@
 {
   "rule_id": "R3001",
   "name": "CNP高风险评分建议3DS",
-  "condition": { "expr": "txn.entry_mode == 'CNP' AND risk_score > 60" },
+  "conditions": [
+    {"type": "ENTRY_MODE", "operator": "==", "value": "CNP"},
+    {"type": "RISK_SCORE", "operator": ">", "value": 60}
+  ],
+  "logic": "AND",
   "action": {
     "decision": "APPROVE",
     "suggestions": ["REQUIRE_3DS"]
@@ -192,10 +196,10 @@
 
 | 规则条件 | decision | suggestions | 说明 |
 |---------|----------|-------------|------|
-| `entry_mode == 'CNP' AND risk_score > 60` | APPROVE | `REQUIRE_3DS` | CNP 高风险建议 3DS |
-| `entry_mode == 'CNP' AND risk_score > 50 AND risk_score <= 70` | REVIEW | `REQUIRE_3DS` | 中风险人工审核 |
-| `entry_mode == 'CP' AND amount > 5000` | APPROVE | `REQUIRE_PIN` | CP 大额建议 PIN |
-| `merchant.require_3ds == true AND entry_mode == 'CNP'` | APPROVE | `REQUIRE_3DS` | 商户级强制配置 |
+| `ENTRY_MODE == CNP AND RISK_SCORE > 60` | APPROVE | `REQUIRE_3DS` | CNP 高风险建议 3DS |
+| `ENTRY_MODE == CNP AND RISK_SCORE > 50 AND RISK_SCORE <= 70` | REVIEW | `REQUIRE_3DS` | 中风险人工审核 |
+| `ENTRY_MODE == CP AND AMOUNT > 5000` | APPROVE | `REQUIRE_PIN` | CP 大额建议 PIN |
+| `MERCHANT.require_3ds == true AND ENTRY_MODE == CNP` | APPROVE | `REQUIRE_3DS` | 商户级强制配置 |
 
 当前支持的建议类型：
 
@@ -205,17 +209,22 @@
 | `REQUIRE_PIN` | 建议触发 PIN 验证 | CP 交易要求输入 PIN |
 | `REQUIRE_OTP` | 建议触发 OTP 验证 | 发送短信验证码 |
 
-### 2.3 多租户规则分层
+### 2.3 规则分层级逻辑
 
 ```
-执行链: Platform Rules (强制, 不可覆盖)
-            → ISO/ISV Rules
-            → Merchant Rules
+执行链: L1 Platform Rules (强制基础规则)
+            → L2 ISO/ISV Rules (租户自定义规则)
+            → L3 Merchant Rules (商户个性化规则)
 
-决策逻辑:
-  - 任一层 DECLINE → 直接拒绝, 短路终止
-  - 任一层 REVIEW  → 标记待审核, 继续执行剩余规则（可能升级为 DECLINE）
-  - 全部 APPROVE   → 通过
+分层级决策逻辑:
+  - L1 DECLINE → 直接拒绝, 短路终止 (平台强制风控)
+  - L1 REVIEW/APPROVE → 继续执行 L2
+  - L2 DECLINE → 直接拒绝, 短路终止 (租户风控)
+  - L2 REVIEW → 标记待审核, 继续执行 L3 (可能升级为 DECLINE)
+  - L2 APPROVE → 继续执行 L3
+  - L3 决策为最终结果 (商户个性化调整)
+
+优先级: L1 > L2 > L3 (高层级可强制覆盖低层级决策)
 ```
 
 ### 2.4 试卡攻击防护
@@ -411,13 +420,403 @@ Redshift 全量扫描历史交易（按特征匹配）
 
 # 第二部分：系统核心能力
 
+## 风控系统核心处理流程
+
+> 每笔交易从进入风控系统到输出最终决策的完整处理链路。
+
+### 核心处理流程图
+
+```
+交易请求 (TransactionRequest)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ① 交易上下文构建 (TransactionContext)                              │
+│    ├── 基础字段映射: amount, entry_mode, mcc, card_hash...        │
+│    ├── 商户信息查询: merchant_status, age_days, limits...         │
+│    ├── 卡片信息解析: bin, issuer_country, card_type...            │
+│    └── 运行时字段: ip, device_fingerprint, geo_location...        │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │ TransactionContext
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ② 规则筛选与编排                                                  │
+│    ├── 按层级链筛选: L1(Platform) → L2(ISO) → L3(Merchant) 规则   │
+│    ├── 按交易模式过滤: CP/CNP/ALL                                 │
+│    ├── 分层级排序: L1(Platform) → L2(ISO) → L3(Merchant)         │
+│    └── 白名单前置检查: 命中则直接 APPROVE                          │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │ 排序后规则列表
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ③ 规则引擎逐层执行                                                │
+│                                                                 │
+│   // 多规则击中处理逻辑                                            │
+│   finalDecision = APPROVE                                       │
+│   triggeredRules = []                                           │
+│   allSuggestions = []                                           │
+│   reasonCode = null                                             │
+│                                                                 │
+│   FOR each Layer (L1 → L2 → L3):                               │
+│     FOR each Rule in Layer:                                     │
+│       ┌─────────────────────────────────────────────────────┐   │
+│       │ ③.1 条件组合执行                                     │   │
+│       │     ├── 原子条件: AMOUNT > 5000                     │   │
+│       │     ├── 原子条件: COUNTRY != 'US'                   │   │
+│       │     ├── 逻辑组合: AND / OR                          │   │
+│       │     └── 外部函数: velocity() / blacklist() / ...    │   │
+│       └─────────────────┬───────────────────────────────────┘   │
+│                         │                                       │
+│       ┌─────────────────▼───────────────────────────────────┐   │
+│       │ ③.2 外部引擎调度 (按需调用)                          │   │
+│       │     ├── Velocity引擎: Redis滑动窗口计数              │   │
+│       │     ├── 名单引擎: Bloom+Redis 黑白灰名单检查         │   │
+│       │     ├── 关联分析: Redis HyperLogLog 关联计数         │   │
+│       │     ├── 地理引擎: 距离计算、不可能旅行检测            │   │
+│       │     └── 设备引擎: 设备指纹、鉴证状态检查              │   │
+│       └─────────────────┬───────────────────────────────────┘   │
+│                         │ 条件结果                               │
+│                         ▼                                       │
+│       ┌─────────────────────────────────────────────────────┐   │
+│       │ ③.3 条件组合求值与决策升级                            │   │
+│       │                                                     │   │
+│       │     // 条件组合逻辑                                  │   │
+│       │     IF rule.logic == AND:                           │   │
+│       │       ruleHit = conditions.stream().allMatch(...)   │   │
+│       │     ELSE IF rule.logic == OR:                       │   │
+│       │       ruleHit = conditions.stream().anyMatch(...)   │   │
+│       │                                                     │   │
+│       │     IF ruleHit == true (规则命中):                   │   │
+│       │       triggeredRules.add(rule.ruleId)               │   │
+│       │       allSuggestions.addAll(rule.suggestions)       │   │
+│       │                                                     │   │
+│       │       // 决策升级逻辑 (严格优先级)                    │   │
+│       │       IF rule.action.decision == DECLINE:           │   │
+│       │         finalDecision = DECLINE                     │   │
+│       │         reasonCode = rule.reasonCode                │   │
+│       │         RETURN 短路终止 (L1/L2层强制)                │   │
+│       │                                                     │   │
+│       │       IF rule.action.decision == REVIEW:            │   │
+│       │         IF finalDecision != DECLINE:                │   │
+│       │           finalDecision = REVIEW                    │   │
+│       │           IF reasonCode == null:                    │   │
+│       │             reasonCode = rule.reasonCode            │   │
+│       │         // 继续执行后续规则 (可能升级为DECLINE)        │   │
+│       │                                                     │   │
+│       │       // APPROVE不改变finalDecision，继续累积建议     │   │
+│       │                                                     │   │
+│       │     ELSE: 规则未命中，继续下一条规则                  │   │
+│       └─────────────────────────────────────────────────────┘   │
+│                                                                 │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │ 汇总结果
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ④ 决策汇总与输出                                                  │
+│    ├── 合并触发规则列表: triggeredRules[]                         │
+│    ├── 合并智能建议: suggestions[] (REQUIRE_3DS, REQUIRE_PIN...)  │
+│    ├── 最终决策: APPROVE / REVIEW / DECLINE                      │
+│    ├── 原因码: reason_code (首个DECLINE/REVIEW规则)               │
+│    └── 风险评分: risk_score (模型输出或规则累加)                   │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │ RiskDecisionResponse
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ ⑤ 异步日志投递                                                    │
+│    ├── 决策日志: EventBridge → Firehose → Redshift              │
+│    ├── 审计日志: 规则命中详情、执行耗时                            │
+│    └── 监控指标: 决策分布、规则命中率、引擎耗时                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 关键性能指标
+
+| 阶段 | 目标耗时 | 降级策略 |
+|------|---------|---------|
+| 上下文构建 | < 5ms | 缓存商户信息 |
+| 规则筛选 | < 2ms | 本地缓存 + 索引 |
+| 条件执行 | < 8ms | 原子条件 + 短路求值 |
+| 外部引擎 | < 30ms | Redis集群 + 降级逻辑 |
+| **总计** | **< 45ms (P99)** | **简化规则集兜底** |
+
+### 并发处理能力
+
+- **无状态设计**: 每个Pod可独立处理请求
+- **本地缓存**: 规则条件、商户信息、配置热加载
+- **连接池**: Redis连接复用，避免连接开销
+- **批量优化**: Velocity查询支持pipeline批量执行
+
+### TransactionContext 构建与字段映射
+
+每笔交易进入风控系统时，首先构建完整的交易上下文作为规则执行的数据源：
+
+```java
+class TransactionContext {
+    // === 交易基础维度 ===
+    BigDecimal amount;           // 交易金额
+    String entryMode;            // CP / CNP
+    String currency;             // USD / EUR
+    int hour;                    // 交易时间(0-23)
+    String terminalId;           // CP终端ID
+    
+    // === 卡片维度 ===
+    String cardHash;             // 脱敏卡号hash
+    String bin;                  // 卡BIN(前6位)
+    String issuerCountry;        // 发卡国
+    String cardType;             // CREDIT/DEBIT/PREPAID
+    String cardBrand;            // VISA/MC/AMEX/DISCOVER
+    
+    // === 验证结果维度 ===
+    String avsResult;            // Y/N/U (地址验证)
+    String cvvResult;            // M/N/U (CVV验证)
+    
+    // === 商户维度 ===
+    String merchantId;
+    String mcc;                  // 商户类别码
+    String merchantStatus;       // ACTIVE/FROZEN/SUSPENDED
+    int merchantAgeDays;         // 商户注册天数
+    BigDecimal singleTxnLimit;   // 单笔限额
+    
+    // === 地理/设备维度 ===
+    String ip;
+    String deviceFingerprint;
+    String email;
+    Double locationLat;
+    Double locationLng;
+    
+    // === 运行时计算维度 ===
+    int riskScore;               // 模型评分(0-100)
+    Map<String, Object> velocityCache;  // Velocity查询缓存
+}
+```
+
+### 规则HIT判定核心机制
+
+规则命中判定基于**原子条件组合**，避免复杂的AST解析，提供简洁高效的执行方式：
+
+#### 1. 原子条件库设计
+
+```java
+// 核心条件接口
+interface Condition {
+    boolean evaluate(TransactionContext ctx);
+}
+
+// 20+原子条件覆盖90%风控场景
+enum ConditionType {
+    // 数值比较
+    AMOUNT, RISK_SCORE, MERCHANT_AGE, SINGLE_LIMIT,
+    // 字符串匹配  
+    COUNTRY, MCC, CARD_TYPE, CARD_BRAND, MERCHANT_STATUS,
+    // 集合操作
+    COUNTRY_IN, MCC_IN, CARD_TYPE_IN,
+    // 时间相关
+    TIME_RANGE, HOUR_RANGE,
+    // 外部引擎
+    VELOCITY, VELOCITY_AMOUNT, BLACKLIST, WHITELIST, GREYLIST,
+    LINK_COUNT, GEO_DISTANCE,
+    // 验证结果
+    AVS_RESULT, CVV_RESULT
+}
+
+// 条件配置结构
+class ConditionConfig {
+    ConditionType type;
+    String field;           // txn.amount, card.country
+    String operator;        // >, <, ==, !=, IN, NOT_IN
+    Object value;           // 5000, "US", ["VISA","MC"]
+    Map<String, Object> params; // velocity专用: {dimension, window}
+}
+```
+
+#### 2. 原子条件实现示例
+
+```java
+class AmountCondition implements Condition {
+    private String operator;
+    private BigDecimal threshold;
+    
+    public boolean evaluate(TransactionContext ctx) {
+        switch (operator) {
+            case ">": return ctx.amount.compareTo(threshold) > 0;
+            case ">=": return ctx.amount.compareTo(threshold) >= 0;
+            case "<": return ctx.amount.compareTo(threshold) < 0;
+            case "<=": return ctx.amount.compareTo(threshold) <= 0;
+            case "==": return ctx.amount.compareTo(threshold) == 0;
+            default: throw new UnsupportedOperatorException(operator);
+        }
+    }
+}
+
+class VelocityCondition implements Condition {
+    private String dimension;   // "card_hash"
+    private String window;      // "1h"
+    private String operator;    // ">"
+    private int threshold;      // 5
+    
+    public boolean evaluate(TransactionContext ctx) {
+        String key = resolveField(dimension, ctx); // ctx.cardHash
+        int count = velocityEngine.count(key, window);
+        return compareInt(count, operator, threshold);
+    }
+}
+
+class BlacklistCondition implements Condition {
+    private String field; // "card_hash", "ip", "email"
+    
+    public boolean evaluate(TransactionContext ctx) {
+        String value = resolveField(field, ctx);
+        return listEngine.checkBlacklist(value);
+    }
+}
+
+class CountryInCondition implements Condition {
+    private List<String> countries;
+    
+    public boolean evaluate(TransactionContext ctx) {
+        return countries.contains(ctx.issuerCountry);
+    }
+}
+```
+
+#### 3. 规则配置简化
+
+```json
+{
+    "rule_id": "R1001",
+    "name": "高额CNP交易拦截",
+    "layer": "L1_PLATFORM",
+    "priority": 10,
+    "entry_mode": "CNP",
+    "conditions": [
+        {
+            "type": "AMOUNT",
+            "field": "txn.amount",
+            "operator": ">",
+            "value": 5000
+        },
+        {
+            "type": "COUNTRY",
+            "field": "card.issuer_country", 
+            "operator": "!=",
+            "value": "US"
+        }
+    ],
+    "logic": "AND",
+    "action": {
+        "decision": "DECLINE",
+        "suggestions": []
+    },
+    "reason_code": "HIGH_AMOUNT_FOREIGN_CNP"
+}
+```
+
+#### 4. 规则执行引擎
+
+```java
+class RuleEngine {
+    private Map<ConditionType, ConditionFactory> conditionFactories;
+    
+    public boolean evaluateRule(Rule rule, TransactionContext ctx) {
+        // 构建条件实例
+        List<Condition> conditions = rule.conditions.stream()
+            .map(config -> conditionFactories.get(config.type).create(config))
+            .collect(toList());
+        
+        // 执行条件组合逻辑
+        if (rule.logic == LogicType.AND) {
+            return conditions.stream().allMatch(cond -> cond.evaluate(ctx));
+        } else if (rule.logic == LogicType.OR) {
+            return conditions.stream().anyMatch(cond -> cond.evaluate(ctx));
+        }
+        
+        return false;
+    }
+}
+
+// 条件工厂
+interface ConditionFactory {
+    Condition create(ConditionConfig config);
+}
+
+class AmountConditionFactory implements ConditionFactory {
+    public Condition create(ConditionConfig config) {
+        return new AmountCondition(config.operator, (BigDecimal) config.value);
+    }
+}
+```
+
+#### 5. 复杂规则支持
+
+对于需要嵌套逻辑的复杂规则，支持条件组：
+
+```json
+{
+    "rule_id": "R2001", 
+    "name": "复合风险规则",
+    "condition_groups": [
+        {
+            "conditions": [
+                {"type": "AMOUNT", "operator": ">", "value": 1000},
+                {"type": "COUNTRY", "operator": "!=", "value": "US"}
+            ],
+            "logic": "AND"
+        },
+        {
+            "conditions": [
+                {"type": "VELOCITY", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5},
+                {"type": "BLACKLIST", "field": "ip"}
+            ],
+            "logic": "OR"
+        }
+    ],
+    "group_logic": "OR"  // 组间逻辑
+}
+```
+
+#### 6. 典型规则HIT判定示例
+
+**规则1**: 高额外卡交易
+```
+条件1: txn.amount > 5000 → ctx.amount = 6000 → true
+条件2: card.issuer_country != 'US' → ctx.issuerCountry = "CA" → true
+逻辑: AND → true AND true → HIT
+```
+
+**规则2**: Velocity + 黑名单
+```
+条件1: velocity(card_hash, 1h) > 5 → Redis查询 → count = 3 → false
+条件2: blacklist(ip) → Bloom+Redis → true
+逻辑: OR → false OR true → HIT
+```
+
+**规则3**: MCC白名单
+```
+条件1: merchant.mcc IN ['5411','5812'] → ctx.mcc = "5411" → true
+条件2: risk_score > 60 → ctx.riskScore = 75 → true  
+逻辑: AND → true AND true → HIT
+```
+
+### 方案优势
+
+| 维度 | AST方案 | 条件组合方案 |
+|------|---------|-------------|
+| **开发周期** | 2个月 | 2周 |
+| **执行性能** | 中等(AST解析) | 高(直接调用) |
+| **内存占用** | 高(AST缓存) | 低(轻量对象) |
+| **学习成本** | 高(DSL语法) | 低(JSON配置) |
+| **扩展性** | 极高 | 中等(原子条件库) |
+| **维护成本** | 高 | 低 |
+
+---
+
 ## 五、规则引擎
 
 > 贯穿事中（交易风控规则）和事后（监控告警规则、规则效果分析）的核心能力。
 
-### 5.1 表达式 DSL
+### 5.1 条件组合配置
 
-支持 ISO/ISV 自助配置规则和表达式。基于 ANTLR4 自研轻量级表达式解析器。
+支持 ISO/ISV 自助配置规则，基于**原子条件组合**的简化方案，避免复杂DSL解析。
 
 规则配置示例：
 
@@ -425,13 +824,25 @@ Redshift 全量扫描历史交易（按特征匹配）
 {
   "rule_id": "R1001",
   "name": "高额CNP交易拦截",
-  "tenant_type": "ISO",
+  "layer": "L2_ISO",
   "tenant_id": "ISO_2001",
   "priority": 10,
   "entry_mode": "CNP",
-  "condition": {
-    "expr": "txn.amount > 5000 AND card.issuer_country != 'US'"
-  },
+  "conditions": [
+    {
+      "type": "AMOUNT",
+      "field": "txn.amount",
+      "operator": ">",
+      "value": 5000
+    },
+    {
+      "type": "COUNTRY",
+      "field": "card.issuer_country",
+      "operator": "!=", 
+      "value": "US"
+    }
+  ],
+  "logic": "AND",
   "action": {
     "decision": "DECLINE",
     "suggestions": []
@@ -440,15 +851,16 @@ Redshift 全量扫描历史交易（按特征匹配）
 }
 ```
 
-表达式语法：
+支持的条件类型：
 
-| 类型 | 示例 |
-|------|------|
-| 比较 | `txn.amount > 1000`, `card.bin IN ['601100','601101']` |
-| 逻辑 | `AND`, `OR`, `NOT` |
-| 函数 | `velocity('card_number', '1h') > 5`, `geo_distance(txn.ip, merchant.address) > 500` |
-| 集合 | `card.brand IN ['VISA','MC']`, `merchant.mcc NOT IN [7995,5966]` |
-| 关联 | `link_count('device', 'card', '1h') > 3` |
+| 类型 | 示例配置 |
+|------|----------|
+| 数值比较 | `{"type": "AMOUNT", "operator": ">", "value": 1000}` |
+| 字符串匹配 | `{"type": "COUNTRY", "operator": "!=", "value": "US"}` |
+| 集合操作 | `{"type": "MCC_IN", "value": ["5411","5812"]}` |
+| Velocity | `{"type": "VELOCITY", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5}` |
+| 名单检查 | `{"type": "BLACKLIST", "field": "ip"}` |
+| 关联分析 | `{"type": "LINK_COUNT", "params": {"from": "device_id", "to": "card_hash", "window": "1h"}, "operator": ">", "value": 3}` |
 
 ### 5.2 规则生命周期
 
@@ -464,332 +876,6 @@ Redshift 全量扫描历史交易（按特征匹配）
 - 平台级规则 ISO/ISV 不可修改或覆盖
 - 规则变更需审计日志，支持版本回滚
 - 规则编译后缓存，变更时热加载
-
-### 5.4 表达式执行核心
-
-> 本节描述规则引擎从 DSL 字符串到最终决策结果的完整运行时机制。
-
-#### 5.4.1 整体架构
-
-```
-规则表达式字符串 (condition_expr)
-    │
-    ▼
-┌─────────────────────────────────────────────────────┐
-│ ① ANTLR4 解析器                                      │
-│    condition_expr → Lexer → Parser → AST (语法树)     │
-│    编译产物缓存至本地 ConcurrentHashMap                  │
-└──────────────────────┬──────────────────────────────┘
-                       │ AST
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│ ② AST 求值器 (ExpressionEvaluator)                    │
-│                                                       │
-│    遍历 AST 节点，按节点类型分派：                        │
-│    ├── 字段引用节点 → 从 TransactionContext 取值         │
-│    ├── 比较/逻辑节点 → 本地运算                          │
-│    └── 函数调用节点 → ③ 外部引擎函数调度                  │
-└──────────────────────┬──────────────────────────────┘
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-   ┌────────────┐ ┌─────────┐ ┌──────────────┐
-   │ Velocity   │ │ 名单引擎 │ │ 关联分析引擎  │
-   │ 引擎       │ │         │ │              │
-   │ Redis 查询 │ │ Redis + │ │ Redis        │
-   │ 滑动窗口   │ │ Bloom   │ │ HyperLogLog  │
-   └────────────┘ └─────────┘ └──────────────┘
-          │            │            │
-          └────────────┼────────────┘
-                       ▼
-              函数返回值回填 AST
-                       │
-                       ▼
-              布尔求值 → HIT / NO MATCH
-                       │
-                       ▼
-              HIT → 返回 Action { decision, suggestions }
-```
-
-#### 5.4.2 ANTLR4 语法定义
-
-文件：`RiskExpression.g4`
-
-```antlr
-grammar RiskExpression;
-
-// ===== Parser Rules =====
-expr
-    : expr AND expr                          // 逻辑与
-    | expr OR expr                           // 逻辑或
-    | NOT expr                               // 逻辑非
-    | '(' expr ')'                           // 分组
-    | comparison                             // 比较表达式
-    ;
-
-comparison
-    : operand op=( '>' | '<' | '>=' | '<=' | '==' | '!=' ) operand
-    | operand 'IN' array
-    | operand 'NOT' 'IN' array
-    ;
-
-operand
-    : functionCall                           // velocity('card_number','1h')
-    | fieldRef                               // txn.amount
-    | NUMBER                                 // 5000
-    | STRING                                 // 'US'
-    ;
-
-functionCall
-    : IDENTIFIER '(' argList ')'             // 函数名(参数列表)
-    ;
-
-argList
-    : operand ( ',' operand )*
-    ;
-
-fieldRef
-    : IDENTIFIER ( '.' IDENTIFIER )*         // txn.amount, card.issuer_country
-    ;
-
-array
-    : '[' operand ( ',' operand )* ']'       // ['VISA','MC']
-    ;
-
-// ===== Lexer Rules =====
-AND     : 'AND' ;
-OR      : 'OR' ;
-NOT     : 'NOT' ;
-IN      : 'IN' ;
-NUMBER  : '-'? [0-9]+ ('.' [0-9]+)? ;
-STRING  : '\'' (~'\'')* '\'' ;
-IDENTIFIER : [a-zA-Z_] [a-zA-Z0-9_]* ;
-WS      : [ \t\r\n]+ -> skip ;
-```
-
-开发要点：
-- 使用 ANTLR4 Maven 插件在编译期自动生成 Lexer / Parser / Visitor
-- 实现 `RiskExpressionVisitor<Object>` 完成 AST 求值
-- 语法刻意精简，不支持赋值、循环、方法定义，确保沙箱安全
-
-#### 5.4.3 编译与缓存
-
-```
-规则创建/更新
-    │
-    ▼
-ANTLR4 解析 condition_expr
-    │
-    ├── 语法错误 → 拒绝保存，返回错误位置和提示
-    │
-    └── 解析成功 → 写入 Aurora (condition_expr 原文)
-                    → config_versions 表 RULES version++
-```
-
-运行时加载策略（纯本地缓存，不缓存 AST 到 Redis）：
-
-> ANTLR4 的 ParseTree 包含大量内部引用，序列化成本高且脆弱。对于 10万-50万日交易量规模，本地 ConcurrentHashMap + 轮询刷新足够。
-
-| 场景 | 行为 |
-|------|------|
-| 服务启动 | 从 Aurora 批量加载所有 enabled 规则 → 逐条编译为 AST → 写入本地 ConcurrentHashMap |
-| 规则变更 | 轮询发现 config_versions.RULES 版本变化 → 从 Aurora 读取最新规则 → 重新编译 → 刷新本地缓存 |
-| 缓存未命中 | 从 Aurora 读取 → 实时编译 → 写入本地缓存 |
-| 规则禁用/删除 | 轮询发现版本变化 → 从本地缓存中移除 |
-
-本地缓存结构：
-
-```java
-Map<String, CompiledRule> localCache = new ConcurrentHashMap<>();
-
-class CompiledRule {
-    String ruleId;
-    int version;
-    ParseTree ast;           // ANTLR4 解析树
-    String tenantType;       // PLATFORM / ISO / MERCHANT
-    String tenantId;
-    int priority;
-    String entryMode;        // CP / CNP / ALL
-    Action action;           // { decision, suggestions, reasonCode }
-}
-```
-
-#### 5.4.4 执行上下文
-
-每笔交易进入规则引擎时，构建 `TransactionContext` 作为表达式求值的数据源：
-
-```java
-class TransactionContext {
-    // === 交易维度 ===
-    BigDecimal amount;
-    String entryMode;          // CP / CNP
-    String currency;
-    int hour;                  // 交易时间（小时）
-    String terminalLocation;   // CP 终端经纬度
-
-    // === 卡片维度 ===
-    String cardHash;           // 脱敏卡号 hash
-    String bin;
-    String issuerCountry;
-    String cardType;           // CREDIT / DEBIT / PREPAID
-    String cardBrand;          // VISA / MC / AMEX
-    String lastLocation;       // 上次交易位置
-
-    // === 验证结果 ===
-    String avsResult;          // Y / N / U
-    String cvvResult;          // M / N / U
-
-    // === 商户维度 ===
-    String merchantId;
-    String mcc;
-    String merchantStatus;     // ACTIVE / FROZEN / SUSPENDED
-    int merchantAgeDays;
-    BigDecimal singleTxnLimit;
-
-    // === 运行时标识 ===
-    String ip;
-    String deviceFingerprint;
-    String email;
-
-    // === 评分模型输出（并行分支 B 回填） ===
-    int riskScore;             // 0-100，供规则引用 risk_score > 60
-}
-```
-
-字段解析规则 — AST 中的 `fieldRef` 节点按以下映射取值：
-
-| DSL 字段路径 | Context 属性 | 类型 |
-|-------------|-------------|------|
-| `txn.amount` | `amount` | BigDecimal |
-| `txn.entry_mode` | `entryMode` | String |
-| `txn.hour` | `hour` | int |
-| `card.issuer_country` | `issuerCountry` | String |
-| `card.bin` | `bin` | String |
-| `card.type` | `cardType` | String |
-| `card.brand` | `cardBrand` | String |
-| `avs_result` | `avsResult` | String |
-| `cvv_result` | `cvvResult` | String |
-| `merchant.mcc` | `mcc` | String |
-| `merchant.status` | `merchantStatus` | String |
-| `merchant.age_days` | `merchantAgeDays` | int |
-| `merchant.single_txn_limit` | `singleTxnLimit` | BigDecimal |
-| `risk_score` | `riskScore` | int |
-
-实现方式：启动时构建 `Map<String, Function<TransactionContext, Object>>` 字段解析器注册表，避免运行时反射。
-
-#### 5.4.5 外部引擎函数调度
-
-AST 求值器遇到 `functionCall` 节点时，通过函数注册表路由到对应的外部引擎：
-
-```java
-Map<String, ExternalFunction> functionRegistry = Map.of(
-    "velocity",           velocityEngine::count,
-    "velocity_amount",    velocityEngine::sumAmount,
-    "blacklist",          listEngine::checkBlacklist,
-    "whitelist",          listEngine::checkWhitelist,
-    "greylist",           listEngine::checkGreylist,
-    "link_count",         linkEngine::countLinks,
-    "geo_distance",       geoEngine::calcDistance,
-    "same_amount_count",  velocityEngine::sameAmountCount
-);
-```
-
-各函数的调用链路：
-
-| DSL 函数 | 路由目标 | 底层操作 | 返回值 |
-|---------|---------|---------|--------|
-| `velocity('card_number','1h')` | VelocityEngine | Redis GET `vel:{card_hash}:cnt:1h` | int (次数) |
-| `velocity_amount('card_number','24h')` | VelocityEngine | Redis GET `vel:{card_hash}:amt:24h` | BigDecimal (金额) |
-| `blacklist('card_hash')` | ListEngine | Bloom Filter → Redis SISMEMBER | boolean |
-| `whitelist('card_hash')` | ListEngine | Redis SISMEMBER | boolean |
-| `greylist('ip')` | ListEngine | Redis SISMEMBER | boolean |
-| `link_count('device','card','1h')` | LinkEngine | Redis PFCOUNT `link:{device_fp}:cards:1h` | int (去重计数) |
-| `geo_distance(loc1, loc2)` | GeoEngine | Haversine 公式本地计算 | double (km) |
-| `same_amount_count('card_number','1h')` | VelocityEngine | Redis 自定义计数器 | int |
-
-异常处理：
-
-| 异常场景 | 处理策略 |
-|---------|---------|
-| Redis 超时 (>5ms) — 计数类函数 | 返回默认安全值 0，规则继续执行 |
-| Redis 超时 (>5ms) — 名单类函数 | fallback 查询 Aurora `risk_lists` 表，仍超时则 blacklist 返回 true（拦截），whitelist 返回 false（不放行） |
-| 函数名未注册 | 编译期拦截，不会到达运行时 |
-| 参数个数/类型错误 | 编译期拦截 |
-
-#### 5.4.6 多租户规则编排
-
-三层规则的执行顺序和短路逻辑：
-
-```
-输入: TransactionContext + 当前交易的 tenantId 链 (Platform → ISO → Merchant)
-
-Step 0: 白名单前置短路
-    IF whitelist('card_hash') == true (任一租户层级):
-        RETURN { decision=APPROVE, triggeredRules=[], suggestions=[], reasonCode='WHITELIST' }
-
-Step 1: 筛选适用规则
-    从本地缓存中筛选:
-    - Platform 全部 enabled 规则
-    - 当前 ISO 的 enabled 规则
-    - 当前 Merchant 的 enabled 规则
-    - 按 entryMode 过滤 (CP/CNP/ALL)
-
-Step 2: 按层级 + 优先级排序
-    排序键: [tenantType 权重(P=0, I=1, M=2), priority ASC]
-
-Step 3: 逐条求值 (短路逻辑)
-    finalDecision = APPROVE
-    triggeredRules = []
-    allSuggestions = []
-
-    FOR each rule IN sortedRules:
-        result = evaluate(rule.ast, transactionContext)
-
-        IF result == HIT:
-            triggeredRules.add(rule.ruleId)
-            allSuggestions.addAll(rule.action.suggestions)
-
-            IF rule.action.decision == DECLINE:
-                RETURN { decision=DECLINE, triggeredRules, allSuggestions, reasonCode }
-
-            IF rule.action.decision == REVIEW:
-                finalDecision = REVIEW
-                reasonCode = rule.reasonCode    // 记录首个 REVIEW 原因码
-
-    RETURN { decision=finalDecision, triggeredRules, allSuggestions, reasonCode }
-```
-
-关键设计决策：
-
-| 决策点 | 选择 | 理由 |
-|--------|------|------|
-| DECLINE 短路 | 命中即返回 | 减少无效计算，P99 更稳定 |
-| REVIEW 不短路 | 标记后继续执行 | 后续规则可能升级为 DECLINE；收集完整触发信息供审核员参考 |
-| Platform 规则优先 | 始终最先执行 | 合规规则不可被租户规则绕过 |
-| suggestions 合并 | 所有命中规则的 suggestions 取并集 | 多条规则可能建议不同验证手段 |
-
-#### 5.4.7 性能约束
-
-目标：单条规则求值 < 1ms，全链路 P99 < 50ms。
-
-| 优化手段 | 作用 |
-|---------|------|
-| AST 编译缓存 (本地 ConcurrentHashMap) | 避免每次请求重新解析 |
-| 字段解析器注册表 | 预构建 Map，避免运行时反射 |
-| 外部函数并行调用 | 同一规则内多个函数调用并行发起 Redis 请求 |
-| Redis Pipeline | 单条规则涉及多个 Redis Key 时批量发送 |
-| DECLINE 短路 | 命中拒绝规则后跳过剩余规则 |
-| 规则预筛选 | 按 entryMode 过滤不适用规则 |
-| 本地 Bloom Filter | 名单查询先过本地 Bloom Filter |
-
-超时保护：
-
-```
-单条规则求值超时: 5ms → 跳过该规则，标记 degraded，记录告警日志
-全链路超时: 45ms → 终止剩余规则，基于已有结果返回决策，标记 degraded
-```
-
----
 
 ## 六、Velocity 引擎
 
@@ -1395,7 +1481,7 @@ Transaction Service
 | 组件 | 选型 | 理由 |
 |------|------|------|
 | 后端语言 | Java 21 (Spring Boot 3) | 收单行业主流，生态成熟 |
-| 规则引擎 | 自研表达式引擎 (ANTLR4) | 轻量可控 |
+| 规则引擎 | 原子条件组合 | 简洁高效 |
 | API 协议 | REST | 对外对内统一 REST，简化技术栈 |
 
 ### 14.2 数据层
