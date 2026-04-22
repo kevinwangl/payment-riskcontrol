@@ -22,7 +22,7 @@ export default function ChargebackImport() {
           { key:'txnId', label:'Txn ID', mono:true },
           { key:'merchantName', label:'Merchant' },
           { key:'cardBrand', label:'Brand' },
-          { key:'reasonCode', label:'Reason', mono:true },
+          { key:'reasonCode', label:'Reason', render:(v, row) => <div><span className="font-mono">{v}</span><div className="text-[11px] text-muted">{row.reasonDesc}</div></div> },
           { key:'amount', label:'Amount', mono:true, align:'right', render:v => fmt.usd(v) },
           { key:'outcome', label:'Outcome', render:v => <StatusBadge status={v || 'PENDING'} /> },
           { key:'receivedAt', label:'Received', render:v => fmt.date(v) },
