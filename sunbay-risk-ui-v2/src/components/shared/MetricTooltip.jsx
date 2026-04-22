@@ -30,7 +30,7 @@ const metrics = {
   'CVV Result': { formula: 'CVV ∈ {M (Match), N (No Match), U (Unavailable)}', desc: 'Card Verification Value check result. N (mismatch) indicates card number may be stolen without physical card. CVV fail triggers automatic DECLINE (rule I006).' },
   // Velocity & Lists
   'Velocity': { formula: 'Velocity = Count or Sum of txns per entity per time window', desc: 'Frequency/amount counters tracked in Redis. Examples: card txn count per 1h, IP txn count per 5m. Thresholds configured per counter, exceeding triggers DECLINE.' },
-  'TTL': { formula: 'TTL = Expiration Time - Current Time', desc: 'Time-To-Live for blacklist/greylist entries. Permanent entries have no TTL. Temporary entries (e.g., 30-min freeze) auto-expire. Displayed as countdown.' },
+  'TTL': { formula: 'TTL = Expiration Time - Current Time', desc: 'Time-To-Live for blacklist entries. Permanent entries have no TTL. Temporary entries (e.g., 30-min freeze) auto-expire. Displayed as countdown.' },
   // Chargeback & Case
   'Deadline': { formula: 'Deadline = Received Date + Card Network Response Window', desc: 'Last date to respond to a chargeback or resolve a case. Visa: typically 30 days. Mastercard: varies by reason code. Missing deadline = automatic loss. < 7 days shown in red.' },
   'Reason Code': { formula: 'Reason Code = Card Network defined dispute category', desc: 'Standardized code explaining why a chargeback was filed. Visa 10.4: Fraud Card Absent. MC 4837: No Cardholder Auth. Determines if dispute is contestable.' },

@@ -15,7 +15,7 @@ export const dashboardData = {
     { ruleId:'P001', action:'DECLINE', hitCount:4201 },
     { ruleId:'I001', action:'DECLINE', hitCount:3210 },
     { ruleId:'I006', action:'DECLINE', hitCount:2890 },
-    { ruleId:'P007', action:'DECLINE', hitCount:2105 },
+    { ruleId:'P004', action:'DECLINE', hitCount:1834 },
     { ruleId:'I005', action:'DECLINE', hitCount:1678 },
   ],
   topEntities: [

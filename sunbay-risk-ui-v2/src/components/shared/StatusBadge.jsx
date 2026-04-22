@@ -2,6 +2,7 @@ import React from 'react'
 
 const styles = {
   APPROVE: 'bg-success/10 text-success', DECLINE: 'bg-danger/10 text-danger',
+  NONE: 'bg-primary/10 text-primary',
   LOW: 'bg-success/10 text-success', MEDIUM: 'bg-warning/10 text-warning',
   HIGH: 'bg-danger/10 text-danger', PROHIBITED: 'bg-danger text-white',
   OPEN: 'bg-primary/10 text-primary', INVESTIGATING: 'bg-warning/10 text-warning',

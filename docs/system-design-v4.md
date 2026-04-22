@@ -20,16 +20,15 @@
   - 八、评分模型
   - 九、关联分析引擎
   - 十、设备风控引擎（Device Risk）
-  - 十一、智能风控闭环（自动训练）
-  - 十二、通用能力（降级、幂等、配置广播、日志投递、AI 助手）
+  - 十一、通用能力（降级、幂等、配置广播、日志投递、AI 助手）
 - 第三部分：技术实现
-  - 十三、系统架构
-  - 十四、技术栈
-  - 十五、数据库设计
-  - 十六、性能设计
+  - 十二、系统架构
+  - 十三、技术栈
+  - 十四、数据库设计
+  - 十五、性能设计
 - 第四部分：交付规划
-  - 十七、资源预估
-  - 十八、实施计划
+  - 十六、资源预估
+  - 十七、实施计划
 - 附录：能力 × 阶段映射矩阵
 
 ---
@@ -48,8 +47,7 @@
 
 - 实时交易风控决策，P99 延迟 < 50ms
 - 分层级规则体系，ISO/ISV 可自助配置规则
-- Chargeback 数据导入与争议流程跟踪，驱动拒付率监控和模型标签回流
-- 人机协同标注 + 模型自动训练的智能风控闭环
+- Chargeback 数据导入与争议流程跟踪，驱动拒付率监控
 - 满足 PCI DSS 审计要求
 
 ### 1.3 业务规模
@@ -111,32 +109,21 @@
     │  ┌─────────────────────────────────────────────────────────┐
     │  │ 第一期: 规则引擎统一执行（无并行分支）                      │
     │  │                                                         │
-    │  │   Step 1: 执行 ADD_SCORE 评分规则，累加 risk_score        │
-    │  │           (复用规则引擎，详见第八章评分模型)                 │
+    │  │   Step 1: 执行所有规则，命中时累加 score_weight           │
     │  │   Step 2: risk_score 回填 TransactionContext              │
-    │  │   Step 3: 执行决策规则 (APPROVE/REVIEW/DECLINE)                   │
+    │  │   Step 3: risk_score >= threshold → DECLINE               │
     │  │           条件内部按需调用子引擎：                        │
     │  │           ├── velocity()  → Velocity 引擎 (第六章)        │
-    │  │           ├── blacklist()/whitelist()/greylist()          │
+    │  │           ├── blacklist()/whitelist()                     │
     │  │           │   → 黑白名单引擎 (第七章, Bloom+Redis)        │
     │  │           └── link_count()                                │
     │  │               → 关联分析引擎 (第九章, Redis HyperLogLog)  │
-    │  └─────────────────────────────────────────────────────────┘
-    │
-    │  ┌─────────────────────────────────────────────────────────┐
-    │  │ 第二期: 规则引擎 + ML 模型并行执行                         │
-    │  │                                                         │
-    │  │   ├─ 并行分支 A: 规则引擎编排执行 (同上，去掉 ADD_SCORE)   │
-    │  │   └─ 并行分支 B: SageMaker Endpoint 模型打分 (~15ms)     │
-    │  │         打分结果回填 TransactionContext.risk_score         │
-    │  │         ADD_SCORE 规则自然退役                             │
     │  └─────────────────────────────────────────────────────────┘
     │
     ▼
 汇总决策: 合并规则命中结果 + risk_score → 返回 decision + suggestions (见 2.2 节)
     │
     ├── APPROVE → 返回授权通过 + suggestions (如 REQUIRE_3DS)
-    ├── REVIEW  → 进入人工审核队列 + 原因码
     └── DECLINE → 返回拒绝 + 原因码
     │
     ▼ (异步)
@@ -162,7 +149,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `request_id` | String | 请求唯一标识，用于幂等 |
-| `decision` | Enum | `APPROVE` / `REVIEW` / `DECLINE` |
+| `decision` | Enum | `APPROVE` / `DECLINE` |
 | `risk_score` | Int | 风险评分（0-100） |
 | `triggered_rules` | Array | 命中的规则 ID 列表 |
 | `suggestions` | Array | 智能建议，支付业务侧读取执行 |
@@ -179,13 +166,19 @@
 {
   "rule_id": "R3001",
   "name": "CNP高风险评分建议3DS",
-  "conditions": [
-    {"type": "ENTRY_MODE", "operator": "==", "value": "CNP"},
-    {"type": "RISK_SCORE", "operator": ">", "value": 60}
+  "condition_groups": [
+    {
+      "logic": "AND",
+      "conditions": [
+        {"type": "txn.entry_mode", "operator": "==", "value": "CNP"},
+        {"type": "score.risk_score", "operator": ">", "value": 60}
+      ]
+    }
   ],
-  "logic": "AND",
+  "group_logic": "AND",
   "action": {
     "decision": "APPROVE",
+    "score_weight": 0,
     "suggestions": ["REQUIRE_3DS"]
   },
   "reason_code": "HIGH_RISK_CNP"
@@ -197,7 +190,6 @@
 | 规则条件 | decision | suggestions | 说明 |
 |---------|----------|-------------|------|
 | `ENTRY_MODE == CNP AND RISK_SCORE > 60` | APPROVE | `REQUIRE_3DS` | CNP 高风险建议 3DS |
-| `ENTRY_MODE == CNP AND RISK_SCORE > 50 AND RISK_SCORE <= 70` | REVIEW | `REQUIRE_3DS` | 中风险人工审核 |
 | `ENTRY_MODE == CP AND AMOUNT > 5000` | APPROVE | `REQUIRE_PIN` | CP 大额建议 PIN |
 | `MERCHANT.require_3ds == true AND ENTRY_MODE == CNP` | APPROVE | `REQUIRE_3DS` | 商户级强制配置 |
 
@@ -218,9 +210,8 @@
 
 分层级决策逻辑:
   - L1 DECLINE → 直接拒绝, 短路终止 (平台强制风控)
-  - L1 REVIEW/APPROVE → 继续执行 L2
+  - L1 APPROVE → 继续执行 L2
   - L2 DECLINE → 直接拒绝, 短路终止 (租户风控)
-  - L2 REVIEW → 标记待审核, 继续执行 L3 (可能升级为 DECLINE)
   - L2 APPROVE → 继续执行 L3
   - L3 决策为最终结果 (商户个性化调整)
 
@@ -271,8 +262,8 @@
 
 ## 三、事后风控 — 监控与数据回流
 
-> 目标：交易完成后持续监控、发现异常、沉淀数据驱动模型进化。
-> 调用的系统能力：规则引擎、Velocity 引擎、黑白名单引擎、关联分析引擎、智能闭环
+> 目标：交易完成后持续监控、发现异常、沉淀数据驱动规则优化。
+> 调用的系统能力：规则引擎、Velocity 引擎、黑白名单引擎、关联分析引擎
 
 ### 3.1 交易监控 & 异常检测
 
@@ -337,7 +328,6 @@ RECEIVED → UNDER_REVIEW → REPRESENTED → WON / LOST
 
 数据用途：
 - **拒付率计算**：实时计算商户 chargeback ratio（Visa VDMP 阈值 0.9%，MC ECP 阈值 1.5%），超标时输出告警
-- **模型标签回流**：CB 结果是最可靠的欺诈标签，回流到模型训练数据集
 - **规则效果分析**：关联 CB 与原始交易的风控决策，评估规则有效性
 - **商户风控联动**：高拒付商户自动收紧风控规则（降低限额、标记强制 3DS 等）
 
@@ -353,7 +343,7 @@ RECEIVED → UNDER_REVIEW → REPRESENTED → WON / LOST
 | 拒付率 0.5% - 0.9% | 降级为中风险，启用增强监控 |
 | 拒付率 > 0.9%（Visa VDMP 阈值） | 降级为高风险，标记强制 3DS，通知商户管理系统 |
 | 拒付率 > 1.5%（MC ECP 阈值） | 通知商户管理系统和结算系统冻结结算 |
-| 检测到试卡攻击 | 通知商户管理系统临时冻结，关联 IP/设备加入灰名单 |
+| 检测到试卡攻击 | 通知商户管理系统临时冻结，关联 IP/设备加入黑名单 |
 
 ### 3.5 批量交易回溯分析
 
@@ -376,15 +366,14 @@ Redshift 全量扫描历史交易（按特征匹配）
 
 | 报表 | 受众 | 频率 | 核心指标 |
 |------|------|------|---------|
-| 平台风控总览 | 平台风控团队 | 实时仪表盘 | 全局拒绝率、REVIEW 率、拒付率、模型准确率 |
+| 平台风控总览 | 平台风控团队 | 实时仪表盘 | 全局拒绝率、拒付率 |
 | ISO 风控报告 | ISO 管理员 | 日报/周报 | 旗下商户拒付率排名、风险事件汇总、限额使用率 |
 | 商户风控报告 | ISO/ISV/Merchant | 日报 | 交易通过率、拒绝原因分布、拒付详情 |
-| 模型监控报告 | 数据团队 | 周报 | 模型 AUC、精确率/召回率、特征漂移、预测分布 |
 | 设备风控报告 | 平台风控团队 | 日报/周报 | 设备类别分布、Attestation 失败率、Geofence 触发率、设备规则命中排行 |
 
 ### 3.7 数据回流
 
-- Chargeback 结果 → 标签数据集 → 触发模型自动训练（详见第十一章）
+- Chargeback 结果 → 标签数据集 → 规则效果分析
 - 规则效果分析 → 规则优化建议
 
 ---
@@ -401,7 +390,6 @@ Redshift 全量扫描历史交易（按特征匹配）
      │  ←── 风控告警 ────────│                          │
      │  ←── 建议冻结/降级 ──│←── Chargeback 数据 ──────│
      │                       │←── 拒付率超标告警 ────────│
-     │                       │  ←── 模型更新 ───────────│  模型训练完成
      │                       │  ←── 规则优化 ───────────│  规则效果分析
      │                       │  ←── 黑名单更新 ─────────│  异常检测结论
 ```
@@ -412,9 +400,8 @@ Redshift 全量扫描历史交易（按特征匹配）
 |---------|-----------------|
 | 商户拒付率 > 0.9% | 标记强制 3DS，降低单笔限额至 $1,000，通知商户管理系统 |
 | 商户拒付率 > 1.5% | 通知商户管理系统和结算系统冻结结算 |
-| 检测到试卡攻击 | 通知商户管理系统临时冻结 30 分钟，关联 IP/设备加入灰名单 |
-| 同一 BIN 段欺诈率 > 5% | 该 BIN 段加入全局灰名单，强制拦截 |
-| 模型精确率下降 > 5% | 自动触发模型重训练，告警数据团队 |
+| 检测到试卡攻击 | 通知商户管理系统临时冻结 30 分钟，关联 IP/设备加入黑名单 |
+| 同一 BIN 段欺诈率 > 5% | 该 BIN 段加入全局黑名单，强制拦截 |
 
 ---
 
@@ -470,7 +457,7 @@ Redshift 全量扫描历史交易（按特征匹配）
 │       ┌─────────────────▼───────────────────────────────────┐   │
 │       │ ③.2 外部引擎调度 (按需调用)                          │   │
 │       │     ├── Velocity引擎: Redis滑动窗口计数              │   │
-│       │     ├── 名单引擎: Bloom+Redis 黑白灰名单检查         │   │
+│       │     ├── 名单引擎: Bloom+Redis 黑白名单检查             │   │
 │       │     ├── 关联分析: Redis HyperLogLog 关联计数         │   │
 │       │     ├── 地理引擎: 距离计算、不可能旅行检测            │   │
 │       │     └── 设备引擎: 设备指纹、鉴证状态检查              │   │
@@ -489,24 +476,23 @@ Redshift 全量扫描历史交易（按特征匹配）
 │       │     IF ruleHit == true (规则命中):                   │   │
 │       │       triggeredRules.add(rule.ruleId)               │   │
 │       │       allSuggestions.addAll(rule.suggestions)       │   │
+│       │       risk_score += rule.score_weight               │   │
 │       │                                                     │   │
-│       │       // 决策升级逻辑 (严格优先级)                    │   │
+│       │       // 决策逻辑                                    │   │
 │       │       IF rule.action.decision == DECLINE:           │   │
 │       │         finalDecision = DECLINE                     │   │
 │       │         reasonCode = rule.reasonCode                │   │
 │       │         RETURN 短路终止 (L1/L2层强制)                │   │
 │       │                                                     │   │
-│       │       IF rule.action.decision == REVIEW:            │   │
-│       │         IF finalDecision != DECLINE:                │   │
-│       │           finalDecision = REVIEW                    │   │
-│       │           IF reasonCode == null:                    │   │
-│       │             reasonCode = rule.reasonCode            │   │
-│       │         // 继续执行后续规则 (可能升级为DECLINE)        │   │
-│       │                                                     │   │
-│       │       // APPROVE不改变finalDecision，继续累积建议     │   │
+│       │       // NONE/APPROVE: 继续累积评分和建议            │   │
 │       │                                                     │   │
 │       │     ELSE: 规则未命中，继续下一条规则                  │   │
 │       └─────────────────────────────────────────────────────┘   │
+│                                                                 │
+│   // 层级执行完毕后，检查评分阈值                                  │
+│   IF risk_score >= tenant.decline_threshold:                    │
+│     finalDecision = DECLINE                                     │
+│     reasonCode = "SCORE_THRESHOLD_EXCEEDED"                     │
 │                                                                 │
 └──────────────────────┬──────────────────────────────────────────┘
                        │ 汇总结果
@@ -515,9 +501,9 @@ Redshift 全量扫描历史交易（按特征匹配）
 │ ④ 决策汇总与输出                                                  │
 │    ├── 合并触发规则列表: triggeredRules[]                         │
 │    ├── 合并智能建议: suggestions[] (REQUIRE_3DS, REQUIRE_PIN...)  │
-│    ├── 最终决策: APPROVE / REVIEW / DECLINE                      │
-│    ├── 原因码: reason_code (首个DECLINE/REVIEW规则)               │
-│    └── 风险评分: risk_score (模型输出或规则累加)                   │
+│    ├── 最终决策: APPROVE / DECLINE                               │
+│    ├── 原因码: reason_code (首个DECLINE规则或阈值超限)            │
+│    └── 风险评分: risk_score (规则加权累加)                          │
 └──────────────────────┬──────────────────────────────────────────┘
                        │ RiskDecisionResponse
                        ▼
@@ -585,7 +571,7 @@ class TransactionContext {
     Double locationLng;
     
     // === 运行时计算维度 ===
-    int riskScore;               // 模型评分(0-100)
+    int riskScore;               // 风险评分(0-100)
     Map<String, Object> velocityCache;  // Velocity查询缓存
 }
 ```
@@ -613,7 +599,7 @@ enum ConditionType {
     // 时间相关
     TIME_RANGE, HOUR_RANGE,
     // 外部引擎
-    VELOCITY, VELOCITY_AMOUNT, BLACKLIST, WHITELIST, GREYLIST,
+    VELOCITY, VELOCITY_AMOUNT, BLACKLIST, WHITELIST,
     LINK_COUNT, GEO_DISTANCE,
     // 验证结果
     AVS_RESULT, CVV_RESULT,
@@ -695,23 +681,19 @@ class CountryInCondition implements Condition {
     "layer": "L1_PLATFORM",
     "priority": 10,
     "entry_mode": "CNP",
-    "conditions": [
+    "condition_groups": [
         {
-            "type": "AMOUNT",
-            "field": "txn.amount",
-            "operator": ">",
-            "value": 5000
-        },
-        {
-            "type": "COUNTRY",
-            "field": "card.issuer_country", 
-            "operator": "!=",
-            "value": "US"
+            "logic": "AND",
+            "conditions": [
+                {"type": "txn.amount", "operator": ">", "value": 5000},
+                {"type": "card.issuer_country", "operator": "!=", "value": "US"}
+            ]
         }
     ],
-    "logic": "AND",
+    "group_logic": "AND",
     "action": {
         "decision": "DECLINE",
+        "score_weight": 0,
         "suggestions": []
     },
     "reason_code": "HIGH_AMOUNT_FOREIGN_CNP"
@@ -763,21 +745,21 @@ class AmountConditionFactory implements ConditionFactory {
     "name": "复合风险规则",
     "condition_groups": [
         {
+            "logic": "AND",
             "conditions": [
-                {"type": "AMOUNT", "operator": ">", "value": 1000},
-                {"type": "COUNTRY", "operator": "!=", "value": "US"}
-            ],
-            "logic": "AND"
+                {"type": "txn.amount", "operator": ">", "value": 1000},
+                {"type": "card.issuer_country", "operator": "!=", "value": "US"}
+            ]
         },
         {
+            "logic": "OR",
             "conditions": [
-                {"type": "VELOCITY", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5},
-                {"type": "BLACKLIST", "field": "ip"}
-            ],
-            "logic": "OR"
+                {"type": "velocity.count", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5},
+                {"type": "list.blacklist", "field": "ip"}
+            ]
         }
     ],
-    "group_logic": "OR"  // 组间逻辑
+    "group_logic": "OR"
 }
 ```
 
@@ -835,39 +817,179 @@ class AmountConditionFactory implements ConditionFactory {
   "tenant_id": "ISO_2001",
   "priority": 10,
   "entry_mode": "CNP",
-  "conditions": [
+  "condition_groups": [
     {
-      "type": "AMOUNT",
-      "field": "txn.amount",
-      "operator": ">",
-      "value": 5000
-    },
-    {
-      "type": "COUNTRY",
-      "field": "card.issuer_country",
-      "operator": "!=", 
-      "value": "US"
+      "group_name": "高额外卡",
+      "logic": "AND",
+      "conditions": [
+        {"type": "txn.amount", "operator": ">", "value": 5000},
+        {"type": "card.issuer_country", "operator": "!=", "value": "US"}
+      ]
     }
   ],
-  "logic": "AND",
+  "group_logic": "AND",
   "action": {
     "decision": "DECLINE",
+    "score_weight": 0,
     "suggestions": []
   },
   "reason_code": "HIGH_AMOUNT_FOREIGN_CNP"
 }
 ```
 
-支持的条件类型：
+复杂规则示例（多条件组）：
 
-| 类型 | 示例配置 |
-|------|----------|
-| 数值比较 | `{"type": "AMOUNT", "operator": ">", "value": 1000}` |
-| 字符串匹配 | `{"type": "COUNTRY", "operator": "!=", "value": "US"}` |
-| 集合操作 | `{"type": "MCC_IN", "value": ["5411","5812"]}` |
-| Velocity | `{"type": "VELOCITY", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5}` |
-| 名单检查 | `{"type": "BLACKLIST", "field": "ip"}` |
-| 关联分析 | `{"type": "LINK_COUNT", "params": {"from": "device_id", "to": "card_hash", "window": "1h"}, "operator": ">", "value": 3}` |
+```json
+{
+  "rule_id": "R2001",
+  "name": "复合风险规则",
+  "condition_groups": [
+    {
+      "group_name": "高额外卡",
+      "logic": "AND",
+      "conditions": [
+        {"type": "txn.amount", "operator": ">", "value": 1000},
+        {"type": "card.issuer_country", "operator": "!=", "value": "US"}
+      ]
+    },
+    {
+      "group_name": "高频或黑名单",
+      "logic": "OR",
+      "conditions": [
+        {"type": "velocity.count", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5},
+        {"type": "list.blacklist", "field": "ip"}
+      ]
+    }
+  ],
+  "group_logic": "OR",
+  "action": {
+    "decision": "DECLINE",
+    "score_weight": 0,
+    "suggestions": []
+  },
+  "reason_code": "COMPOUND_HIGH_RISK"
+}
+```
+
+条件组合规则：
+- 简单规则：1 个 group，内部 AND/OR
+- 复杂规则：多个 group，`group_logic` 控制组间关系（AND/OR）
+- 最多两层嵌套，更复杂的场景拆成多条规则
+
+### 5.2 条件字典
+
+10 大维度，覆盖美国收单支付风控场景：
+
+**① Transaction（交易维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `txn.amount` | 交易金额 | 数值 | `>` `<` `>=` `<=` `==` `BETWEEN` |
+| `txn.currency` | 币种 | 字符串 | `==` `!=` `IN` |
+| `txn.entry_mode` | 交易模式 | 枚举 | `==` `!=` | CP / CNP |
+| `txn.pos_entry_mode` | POS 输入方式 | 枚举 | `==` `IN` | CHIP / SWIPE / CONTACTLESS / MANUAL_KEY / ECOMMERCE |
+| `txn.mcc` | 商户类别码 | 字符串 | `==` `IN` `NOT_IN` |
+| `txn.hour` | 交易时间（小时） | 数值 | `BETWEEN` |
+| `txn.is_recurring` | 是否周期性扣款 | 布尔 | `==` |
+| `txn.is_fallback` | 是否降级交易（芯片→刷卡） | 布尔 | `==` |
+| `txn.auth_type` | 授权类型 | 枚举 | `==` `IN` | FINAL_AUTH / PRE_AUTH / INCREMENTAL |
+
+**② Card（卡片维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `card.bin` | 卡 BIN（前6-8位） | 字符串 | `==` `IN` `PREFIX` |
+| `card.brand` | 卡组织 | 枚举 | `==` `IN` | VISA / MC / AMEX / DISCOVER |
+| `card.type` | 卡类型 | 枚举 | `==` `IN` | CREDIT / DEBIT / PREPAID / COMMERCIAL |
+| `card.issuer_country` | 发卡国 | 字符串 | `==` `!=` `IN` `NOT_IN` |
+| `card.is_international` | 是否跨境卡 | 布尔 | `==` |
+| `card.funding_source` | 资金来源 | 枚举 | `==` | CREDIT / DEBIT / PREPAID |
+
+**③ Verification（验证结果维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `verify.avs_result` | 地址验证结果 | 枚举 | `==` `!=` `IN` | Y / N / U / A / Z |
+| `verify.cvv_result` | CVV 验证结果 | 枚举 | `==` `!=` | M / N / U / P |
+| `verify.3ds_result` | 3DS 验证结果 | 枚举 | `==` `IN` | AUTHENTICATED / ATTEMPTED / FAILED / NOT_ENROLLED |
+| `verify.3ds_version` | 3DS 版本 | 字符串 | `==` `>=` |
+| `verify.pin_verified` | PIN 验证通过 | 布尔 | `==` |
+| `verify.emv_result` | EMV 芯片验证结果 | 枚举 | `==` | APPROVED / DECLINED / UNABLE |
+
+**④ Merchant（商户维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `merchant.status` | 商户状态 | 枚举 | `==` `!=` | ACTIVE / FROZEN / SUSPENDED |
+| `merchant.age_days` | 注册天数 | 数值 | `>` `<` `>=` |
+| `merchant.risk_level` | 风险等级 | 枚举 | `==` `IN` | LOW / MEDIUM / HIGH |
+| `merchant.chargeback_rate` | 当前拒付率 | 数值 | `>` `>=` |
+| `merchant.mcc` | 商户 MCC | 字符串 | `==` `IN` |
+| `merchant.require_3ds` | 是否强制 3DS | 布尔 | `==` |
+
+**⑤ Geo/Network（地理/网络维度）— CNP 为主**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `geo.ip_country` | IP 所在国 | 字符串 | `==` `!=` `IN` |
+| `geo.ip_state` | IP 所在州 | 字符串 | `==` `IN` |
+| `geo.billing_shipping_match` | 账单地址与收货地址是否一致 | 布尔 | `==` |
+| `geo.ip_card_country_match` | IP 国家与发卡国是否一致 | 布尔 | `==` |
+| `geo.is_vpn` | 是否 VPN/代理 | 布尔 | `==` |
+| `geo.is_tor` | 是否 Tor 出口节点 | 布尔 | `==` |
+| `geo.distance_km` | 地理距离（两点间） | 数值 | `>` |
+
+**⑥ Device（设备维度）— CP 为主**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `device.category` | 设备类别 | 枚举 | `==` | CERTIFIED_POS / DEDICATED_DEVICE / COTS_DEVICE |
+| `device.status` | 设备状态 | 枚举 | `==` | ACTIVE / BLOCKED |
+| `device.attestation_status` | 完整性证明 | 枚举 | `==` | VERIFIED / FAILED / EXPIRED |
+| `device.is_rooted` | Root/越狱 | 布尔 | `==` |
+| `device.tee_available` | TEE 可用 | 布尔 | `==` |
+| `device.is_emulator` | 模拟器 | 布尔 | `==` |
+| `device.tamper_detected` | 物理篡改 | 布尔 | `==` |
+| `device.pts_cert_expired` | PTS 证书过期 | 布尔 | `==` |
+
+**⑦ Velocity（频率/累计维度）— 高级，风控专家使用**
+
+| 条件 Key | 说明 | 参数 | 操作符 |
+|----------|------|------|--------|
+| `velocity.count` | 交易次数 | dimension + window | `>` `>=` |
+| `velocity.amount` | 累计金额 | dimension + window | `>` `>=` |
+| `velocity.distinct` | 去重计数 | from + to + window | `>` `>=` |
+
+dimension: `card_hash` / `ip` / `device_id` / `email` / `merchant_id` / `terminal_id`
+window: `5m` / `15m` / `1h` / `6h` / `24h` / `7d` / `30d`
+
+**⑧ Limit（限额维度）— 简化，ISO/商户管理员使用**
+
+| 条件 Key | 说明 | 内置维度 | 内置窗口 |
+|----------|------|---------|---------|
+| `limit.single_txn_amount` | 单笔限额 | — | — |
+| `limit.card_daily_count` | 单卡日交易笔数 | card_hash | 24h |
+| `limit.card_daily_amount` | 单卡日累计金额 | card_hash | 24h |
+| `limit.merchant_daily_count` | 商户日交易笔数 | merchant_id | 24h |
+| `limit.merchant_daily_amount` | 商户日累计金额 | merchant_id | 24h |
+| `limit.merchant_monthly_amount` | 商户月累计金额 | merchant_id | 30d |
+| `limit.terminal_daily_count` | 终端日交易笔数 | terminal_id | 24h |
+| `limit.terminal_daily_amount` | 终端日累计金额 | terminal_id | 24h |
+
+Limit 底层复用 Velocity 引擎，前端配置时只需填阈值。
+
+**⑨ List（名单维度）**
+
+| 条件 Key | 说明 | 字段 |
+|----------|------|------|
+| `list.blacklist` | 黑名单命中 | card_hash / ip / email / device_id / phone / merchant_id |
+| `list.whitelist` | 白名单命中 | 同上 |
+
+**⑩ Score（评分维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `score.risk_score` | 风险评分 | 数值 | `>` `>=` `<` `BETWEEN` |
 
 ### 5.2 规则生命周期
 
@@ -883,6 +1005,72 @@ class AmountConditionFactory implements ConditionFactory {
 - 平台级规则 ISO/ISV 不可修改或覆盖
 - 规则变更需审计日志，支持版本回滚
 - 规则编译后缓存，变更时热加载
+
+### 5.4 规则模板
+
+> 提供预置规则集模板，ISO 可基于模板快速创建规则，也可将自己的规则集保存为模板供其他 ISO 使用。
+
+**模板层级：**
+
+```
+系统默认模板 (Platform 提供)
+    ├── 通用行业模板 — 覆盖所有 MCC，基础限额 + Velocity + 黑名单
+    ├── 高风险行业模板 — MCC 5967/5966/7995 等，更严格阈值
+    └── 低风险行业模板 — MCC 5411/5812 等，更宽松阈值
+
+ISO 自定义模板
+    └── 任意 ISO 可将当前规则集保存为模板（默认公开，其他 ISO 可见）
+```
+
+**使用流程：**
+
+```
+新 ISO 入网 / ISO 重置规则
+    │
+    ▼
+选择模板（系统模板 / 其他 ISO 模板 / 空白）
+    │
+    ▼
+从模板复制一份独立副本到该 ISO 名下
+    │
+    ▼
+ISO 在副本上调整阈值、增删规则
+    │
+    ▼
+可选: 将当前配置 "保存为模板"
+```
+
+模板是**复制**而非引用，ISO 修改不影响模板，模板更新不影响已创建的 ISO 规则。
+
+**模板数据结构：**
+
+```json
+{
+  "template_id": "TPL_001",
+  "name": "系统通用模板",
+  "source": "PLATFORM",
+  "source_id": null,
+  "description": "适用于所有行业的基础风控规则集",
+  "mcc_scope": "ALL",
+  "rules": [
+    {
+      "name": "商户日累计限额",
+      "entry_mode": "ALL",
+      "condition_groups": [{
+        "logic": "OR",
+        "conditions": [
+          {"type": "limit.merchant_daily_amount", "operator": ">", "value": 50000000},
+          {"type": "limit.merchant_daily_count", "operator": ">", "value": 100000}
+        ]
+      }],
+      "group_logic": "AND",
+      "action": {"decision": "DECLINE", "score_weight": 0},
+      "reason_code": "MERCHANT_DAILY_LIMIT"
+    }
+  ],
+  "version": 1
+}
+```
 
 ## 六、Velocity 引擎
 
@@ -916,11 +1104,10 @@ class AmountConditionFactory implements ConditionFactory {
 
 ### 7.1 名单维度与类型
 
-- 维度：卡号 hash / BIN 范围 / IP（支持 CIDR）/ 设备指纹 / 邮箱 / 手机号
+- 维度：卡号 hash / IP（支持 CIDR）/ 邮箱 / 设备指纹 / 手机号 / 商户 ID
 - 类型：
   - `BLACKLIST`：直接拒绝
   - `WHITELIST`：跳过规则检查
-  - `GREYLIST`：加分（提升风险评分），增加拦截概率
 - 租户隔离：平台级（全局）+ ISO 级 + Merchant 级
 - 支持过期时间（临时封禁场景）
 
@@ -934,74 +1121,115 @@ class AmountConditionFactory implements ConditionFactory {
 
 ## 八、评分模型
 
-> 主要服务事中（实时打分），数据来源依赖事后（标签回流）。
+> 主要服务事中（实时打分）。采用规则加权评分方案，100% 可解释，无需训练数据。
 
-### 8.1 演进路径
+### 8.1 评分机制
 
-```
-第一期 (MVP)          第二期
-规则加权评分     →   XGBoost / LightGBM 模型
-人工配置权重     →   历史数据训练
-100% 可解释     →   特征重要性可解释
-无需训练数据     →   需要 3-6 个月数据
-```
+每条规则都携带 `score_weight`（正整数），规则命中时累加到 `risk_score`。不再区分"评分规则"和"决策规则"，所有规则统一处理。
 
-### 8.2 第一期：规则加权评分
-
-> 第一期不单独实现评分引擎，直接复用规则引擎（第五章）。通过新增 `ADD_SCORE` action 类型，每条评分规则命中时累加分数，最终汇总为 risk_score。
-
-评分规则配置示例：
+规则 action 结构：
 
 ```json
 {
-  "rule_id": "S001",
-  "name": "高额交易加分",
-  "tenant_type": "PLATFORM",
-  "condition": { "expr": "txn.amount > 3000" },
-  "action": { "decision": "ADD_SCORE", "score_delta": 20, "suggestions": [] },
-  "reason_code": "HIGH_AMOUNT"
+  "action": {
+    "decision": "NONE",
+    "score_weight": 15,
+    "suggestions": []
+  }
 }
 ```
+
+decision 可选值：
+- `NONE` — 仅加分，不做决策
+- `APPROVE` — 命中时标记通过（携带 suggestions）
+- `DECLINE` — 命中时直接拒绝（短路终止）
 
 执行流程：
 
 ```
-Step 1: 执行所有 ADD_SCORE 规则，累加 risk_score
-    risk_score = 0
-    IF txn.amount > 3000           THEN risk_score += 20
-    IF card.issuer_country != 'US' THEN risk_score += 15
-    IF avs_result == 'N'          THEN risk_score += 25
-    IF cvv_result == 'N'          THEN risk_score += 30
-    IF velocity(card, 1h) > 3     THEN risk_score += 20
-    IF txn.entry_mode == 'CNP'    THEN risk_score += 10
-    IF merchant.age_days < 90     THEN risk_score += 15
+risk_score = 0
 
-Step 2: risk_score 回填 TransactionContext.riskScore
+FOR each rule (按层级 L1 → L2 → L3 执行):
+  IF 规则命中:
+    risk_score += rule.score_weight
+    IF rule.decision == DECLINE → 短路终止
+    IF rule.decision == APPROVE → 累积 suggestions
 
-Step 3: 执行决策类规则 (APPROVE/REVIEW/DECLINE)
-    后续规则可引用 risk_score，如: risk_score > 70 → DECLINE
-
-阈值: 0-49 APPROVE / 50-70 REVIEW / 71+ DECLINE
+所有规则执行完毕后:
+  IF risk_score >= tenant.decline_threshold → DECLINE
+  ELSE → APPROVE
 ```
 
-优势：无需两套执行路径，评分规则和决策规则共享同一套条件组合执行框架、缓存、多租户编排能力。第二期切换为 ML 模型后，`ADD_SCORE` 规则自然退役，risk_score 改由 SageMaker Endpoint 提供。
+### 8.2 阈值配置
 
-### 8.3 第二期：ML 模型
+阈值由 ISO 自行配置，Platform 设置默认值：
 
-- 算法：XGBoost / LightGBM
-- 特征：交易金额、时间、频率、地理距离、AVS/CVV 结果、商户行业、历史拒付率等
-- 标签：该笔交易最终是否产生了 chargeback / fraud
-- 输出：0-1 之间的欺诈概率
-- 训练管道：SageMaker Pipeline（详见第十一章）
+| 配置项 | 说明 | 默认值 | 可配层级 |
+|--------|------|--------|---------|
+| `decline_threshold` | risk_score >= 此值则 DECLINE | 70 | Platform / ISO |
 
-### 8.4 模型监控
+配置存储在租户配置表中，规则引擎执行时读取当前 ISO 的阈值。
 
-| 指标 | 告警阈值 | 含义 |
-|------|---------|------|
-| 特征分布漂移 (PSI) | > 0.2 | 输入数据分布变化，模型可能失效 |
-| 预测分布偏移 | 平均分偏移 > 15% | 打分整体偏高或偏低 |
-| 精确率 | 下降 > 5% | 误杀增多 |
-| 召回率 | 下降 > 5% | 漏放增多 |
+### 8.3 评分公式可视化
+
+**规则列表页 — 评分公式面板：**
+
+展示当前 ISO 所有带 score_weight 的规则及其权重，帮助管理员理解评分构成：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Risk Score Formula — ISO: Acme Payments                     │
+│                                                             │
+│ risk_score = Σ (命中规则的 score_weight)                     │
+│                                                             │
+│ Rule              Condition (简写)        Weight  Status    │
+│ ─────────────────────────────────────────────────────────── │
+│ R2001 跨境卡交易   issuer_country != US     +15   ✓ On     │
+│ R2002 高额CNP无3DS amount>3000 & CNP & !3DS +25   ✓ On     │
+│ R2003 AVS不匹配    avs_result == N          +20   ✓ On     │
+│ R2004 CVV不匹配    cvv_result == N          +25   ✓ On     │
+│ R2005 高频交易      card 1h > 3次            +20   ✓ On     │
+│ R2006 新商户        merchant_age < 90天      +10   ✓ On     │
+│ R2007 CNP交易       entry_mode == CNP        +10   ✓ On     │
+│                          Max Possible Score:  125           │
+│                                                             │
+│ Decline Threshold: [70]  ▲ ISO 可调整                       │
+│                                                             │
+│  0              70             125                          │
+│  ├──────────────┼──────────────┤                           │
+│  │   APPROVE    │   DECLINE    │                           │
+│  ■■■■■■■■■■■■■■▓▓▓▓▓▓▓▓▓▓▓▓▓▓                           │
+│  green          red                                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**交易详情页 — 评分分解指示器：**
+
+针对单笔交易，展示实际命中的规则及各自贡献：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Risk Score Breakdown — TXN_20260422_abc123                  │
+│                                                             │
+│ Final Score: 65 / APPROVE (threshold: 70)                   │
+│                                                             │
+│  0              65  70             125                       │
+│  ├──────────────┼───┼──────────────┤                       │
+│  ■■■■■■■■■■■■■■░░░░│              │                       │
+│  APPROVE        ▲   DECLINE                                 │
+│                                                             │
+│ Score Composition:                                          │
+│  R2001 跨境卡交易      ████████████████ +15   ✓ HIT        │
+│  R2002 高额CNP无3DS    █████████████████████████ +25  ✓ HIT│
+│  R2003 AVS不匹配       ████████████████████ +20   ✓ HIT    │
+│  R2004 CVV不匹配                              0   ✗ MISS   │
+│  R2005 高频交易                                0   ✗ MISS   │
+│  R2006 新商户                                  0   ✗ MISS   │
+│  R2007 CNP交易          ██████████ +10   ✓ HIT              │
+│                         ─────────                           │
+│                         Total: 65 → APPROVE                 │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -1181,15 +1409,12 @@ class TransactionContext {
 
 **Rule Editor — 设备字段支持：**
 - Device Category 选择器（ALL / CERTIFIED_POS / DEDICATED_DEVICE / COTS_DEVICE）
-- 条件字段下拉按分组展示（Transaction / Card / Verification / Merchant / Velocity / Link Analysis / Lists / Geo / Device）
+- 条件字段下拉按分组展示（Transaction / Card / Verification / Merchant / Geo / Device / Velocity / Limit / List / Score）
 - 设备字段按 `device_category` 动态过滤
 
 **Velocity Config — 设备维度计数器：**
 - 4 个设备维度计数器模板：Device Txn Count、Device Txn Amount、Device Distinct Cards、Device Location Jump
 - Platform 级计数器只读保护
-
-**Review Workbench — 设备上下文：**
-- 触发规则高亮卡片 + Device Context 面板（设备类别、鉴证状态、安全检测结果）
 
 **Transaction Detail — 设备信息区块：**
 - 设备基本信息 + 安全字段（attestation/security）+ 规则详情卡片 + 分数公式
@@ -1202,78 +1427,9 @@ class TransactionContext {
 
 ---
 
-## 十一、智能风控闭环（自动训练）
+## 十一、通用能力（降级、幂等、配置广播、日志投递、AI 助手）
 
-> 连接事中（决策）和事后（标注、训练），形成风控系统的自我进化能力。
-
-### 11.1 闭环流程
-
-```
-交易 → 风控引擎决策 → APPROVE / REVIEW / DECLINE
-              │
-              ▼
-        特征+决策结果
-        写入特征仓库
-              │
-              ▼
-        标注数据集 (Feature Store)  ←── Chargeback 数据导入回填
-                    │
-          ┌─────────▼──────────┐
-          │   模型自动训练管道   │  ← 定期/数据量触发
-          └─────────┬──────────┘
-                    │
-          ┌─────────▼──────────┐
-          │  模型评估 & Shadow  │  ← 新旧模型对比 3-7 天
-          └─────────┬──────────┘
-                    │
-              通过评估 → 灰度上线 (10%→50%→100%)
-                    │
-              风控引擎热加载新模型
-```
-
-### 11.2 标签来源
-
-| 来源 | 时效 | 可靠度 |
-|------|------|--------|
-| Chargeback 数据导入 | 30-180 天 | 最高（实际结果） |
-| 规则自动标注 | 实时 | 中（辅助补充） |
-
-### 11.3 自动训练管道（SageMaker）
-
-触发条件（满足任一）：
-- 新增标注数据 > 5,000 条
-- 距上次训练 > 7 天
-- 模型监控指标下降（精确率/召回率偏移）
-
-流程：
-1. 数据准备：从 Redshift 导出到 S3，正负样本平衡
-2. 模型训练：SageMaker Pipeline，XGBoost / LightGBM
-3. 离线评估：AUC-ROC、精确率@固定召回率、KS 统计量
-4. Shadow 模式：新模型并行打分不参与决策，对比 3-7 天
-5. 灰度上线：通过评估后 10% → 50% → 100% 流量切换
-
-### 11.4 模型热更新
-
-```
-模型训练完成 → config_versions.MODEL version++
-    │
-    ▼
-各 Pod 轮询发现版本变化
-    │
-    ▼
-从 S3 / SageMaker Registry 拉取新版本
-    │
-    ▼
-加载到内存，健康检查 → 原子切换
-    │
-    └── 回滚能力: 一键切回上一版本
-```
-
----
-
-## 十二、通用能力（降级、幂等、配置广播、日志投递、AI 助手）
-
-### 12.1 降级策略
+### 11.1 降级策略
 
 ```
 风控引擎状态检测
@@ -1297,13 +1453,13 @@ class TransactionContext {
 
 降级期间所有交易标记降级标识，事后批量回溯分析。
 
-### 12.2 幂等性设计
+### 11.2 幂等性设计
 
 - 每笔交易请求携带唯一 `request_id`
 - Redis 记录 `idempotent:{request_id}` → 决策结果，TTL 24h
 - 重复请求直接返回缓存的决策结果，不重复执行规则和更新 Velocity 计数器
 
-### 12.3 配置变更广播（轮询 + 版本号）
+### 11.3 配置变更广播（轮询 + 版本号）
 
 > 替代 EventBridge + SQS + Lambda 事件总线方案，用最简单的轮询机制实现配置同步。
 
@@ -1311,7 +1467,7 @@ class TransactionContext {
 
 ```sql
 CREATE TABLE config_versions (
-    config_type VARCHAR(20) PRIMARY KEY,  -- RULES / LISTS / MODEL
+    config_type VARCHAR(20) PRIMARY KEY,  -- RULES / LISTS
     version     INT NOT NULL DEFAULT 0,
     updated_at  DATETIME(3)
 );
@@ -1326,7 +1482,6 @@ CREATE TABLE config_versions (
 本地缓存记录当前版本号:
   rules_version = 42
   lists_version = 18
-  model_version = 3
 
 如果远端版本 > 本地版本 → 重新加载该类配置
 如果相等 → 跳过
@@ -1335,7 +1490,6 @@ CREATE TABLE config_versions (
 变更触发：
 - 规则新增/编辑/删除 → `UPDATE config_versions SET version = version + 1 WHERE config_type = 'RULES'`
 - 名单变更 → LISTS version++
-- 模型部署 → MODEL version++
 
 设计优势：
 - 零额外基础设施依赖（只用 Aurora，已有）
@@ -1343,7 +1497,7 @@ CREATE TABLE config_versions (
 - 5-10 秒配置生效延迟，对规则变更场景完全可接受
 - 无消息丢失问题（轮询天然可靠）
 
-### 12.4 决策日志投递（Firehose 直投）
+### 11.4 决策日志投递（Firehose 直投）
 
 > 决策日志是高吞吐写入场景，使用 Amazon Data Firehose 直接投递到 Redshift，不经过事件总线。
 
@@ -1362,13 +1516,13 @@ Amazon Data Firehose
 
 ---
 
-### 12.5 AI 风控助手
+### 11.5 AI 风控助手
 
 > 原型已实现。嵌入前端操作台的上下文感知 AI 助手，辅助风控运营决策。
 
 **交互方式：**
 - 右侧滑出面板（420px 宽），快捷键 `⌘K` 唤起 / `Esc` 关闭
-- 打字机效果逐字输出，数据引用（金额、百分比、规则 ID、模型版本）高亮显示
+- 打字机效果逐字输出，数据引用（金额、百分比、规则 ID）高亮显示
 - 回复中可包含页面跳转链接（如"查看商户"→ `/merchants/M_1012`）
 
 **上下文感知：**
@@ -1380,7 +1534,6 @@ AI 助手根据当前页面路由自动切换上下文和推荐提问：
 | Dashboard | "今日交易概况"、"有什么异常？" | 汇总 KPI、检测异常指标 |
 | Rules / Rule Editor | "帮我写一条规则"、"规则优化建议"、"阈值调整建议" | 规则生成、模板推荐、效果预估 |
 | Transactions | "这笔交易为什么被拒？"、"分析风险因素" | 单笔交易风险归因分析 |
-| Models | "模型表现怎么样？"、"PSI 漂移分析" | 模型健康诊断、版本对比 |
 | Chargebacks | "当前争议概况"、"抗辩建议" | CB 统计汇总、抗辩策略建议 |
 | Merchants | "高风险商户有哪些？"、"拒付率最高的商户？" | 商户风险排查 |
 
@@ -1388,20 +1541,19 @@ AI 助手根据当前页面路由自动切换上下文和推荐提问：
 - 风控数据查询：交易概况、拒绝率分析、高风险商户识别
 - 规则辅助：根据历史数据生成规则建议（条件 + 决策 + 预估命中率/误杀率）、推荐常用模板、阈值优化建议
 - 交易分析：单笔交易风险因素归因（各维度权重占比）、相似案例匹配
-- 模型诊断：PSI 漂移特征分析、版本对比、灰度上线建议
-- 异常检测：主动发现拒绝率突增、商户异常、模型指标偏移
+- 异常检测：主动发现拒绝率突增、商户异常
 
 **技术实现（第二期）：**
-- 后端：LLM API（如 Amazon Bedrock）+ RAG（检索增强生成），知识库包含规则配置、历史决策日志、模型指标
+- 后端：LLM API（如 Amazon Bedrock）+ RAG（检索增强生成），知识库包含规则配置、历史决策日志
 - 前端：当前原型使用关键词匹配 mock 响应，后续替换为实时 API 调用 + 流式输出
 
 ---
 
 # 第三部分：技术实现
 
-## 十三、系统架构
+## 十二、系统架构
 
-### 13.1 整体架构
+### 12.1 整体架构
 
 ```
                         ┌─────────────────┐
@@ -1430,11 +1582,11 @@ AI 助手根据当前页面路由自动切换上下文和推荐提问：
      ▼    ▼                ▼              ▼                  ▼
 ┌───────────┐ ┌──────────┐   Zero-ETL   ┌────────────┐  ┌──────────────────┐
 │ElastiCache│ │ Aurora   ├─────────────►│ Redshift   │  │ S3               │
-│  Redis    │ │  MySQL   │              │ Serverless │  │ (模型/归档)       │
+│  Redis    │ │  MySQL   │              │ Serverless │  │ S3 (归档)         │
 └───────────┘ └──────────┘              └────────────┘  └──────────────────┘
 
 ┌────────────────┐
-│ Data Firehose  │  ← 决策日志直投 Redshift (第十二章 12.4)
+│ Data Firehose  │  ← 决策日志直投 Redshift (第十一章 11.4)
 └────────────────┘
 ```
 
@@ -1445,7 +1597,7 @@ AI 助手根据当前页面路由自动切换上下文和推荐提问：
 - Chargeback Service 提供数据导入和争议流程跟踪（状态流转 + 拒付率监控）
 - 去掉 EventBridge + SQS + Lambda 事件总线层 → 改为轮询 + 版本号 + Firehose 直投
 
-### 13.2 数据流转全链路
+### 12.2 数据流转全链路
 
 ```
 交易请求
@@ -1455,7 +1607,6 @@ Transaction Service
     │
     ├──→ ElastiCache Redis (Velocity 查询/更新, 黑白名单缓存)
     ├──→ 内存 (规则求值, 规则从 Aurora 加载并缓存)
-    ├──→ SageMaker Endpoint (模型打分, 第二期)
     │
     ▼
   决策结果返回 (<50ms)
@@ -1463,10 +1614,9 @@ Transaction Service
     ├──→ Firehose PutRecord (异步) → 自动攒批 → Redshift
 
 审核完成 → Aurora (更新标签) → Redshift (每日回填 label)
-    → 触发条件满足 → SageMaker Pipeline (自动训练)
 ```
 
-### 13.3 数据存储分层
+### 12.3 数据存储分层
 
 ```
 热数据 (实时读写, <10ms)
@@ -1485,16 +1635,16 @@ Transaction Service
   └── Redshift Serverless
       交易流水、风控决策日志、特征快照、统计报表
 
-归档 & 模型存储
+归档存储
   └── S3
-      历史交易归档(Parquet)、模型文件
+      历史交易归档(Parquet)
 ```
 
 ---
 
-## 十四、技术栈
+## 十三、技术栈
 
-### 14.1 应用层
+### 13.1 应用层
 
 | 组件 | 选型 | 理由 |
 |------|------|------|
@@ -1502,27 +1652,19 @@ Transaction Service
 | 规则引擎 | 原子条件组合 | 简洁高效 |
 | API 协议 | REST | 对外对内统一 REST，简化技术栈 |
 
-### 14.2 数据层
+### 13.2 数据层
 
 | 组件 | AWS 服务 | 用途 |
 |------|---------|------|
 | 热数据 | ElastiCache Redis Cluster | Velocity 计数器、黑白名单缓存、幂等 Key、关联分析计数器 |
 | 业务主库 | Aurora MySQL | 规则配置、租户信息、Chargeback 争议记录、审计日志 |
 | 分析仓库 | Redshift Serverless | 交易流水、风控决策日志、特征快照、统计报表 |
-| 归档存储 | S3 | 历史交易归档(Parquet)、模型文件 |
+| 归档存储 | S3 | 历史交易归档(Parquet) |
 | 流式导入 | Amazon Data Firehose | 决策日志直投 Redshift |
 | 数据同步 | Aurora Zero-ETL | Aurora 业务数据近实时同步到 Redshift |
 | 运维告警 | SNS | 告警通知推送 |
 
-### 14.3 ML 管道
-
-| 组件 | AWS 服务 | 用途 |
-|------|---------|------|
-| 模型训练 | SageMaker Pipeline | 自动化训练流程 |
-| 模型注册 | SageMaker Model Registry | 模型版本管理 |
-| 实时推理 | SageMaker Endpoint | 风控引擎调用模型打分 |
-
-### 14.4 基础设施
+### 13.3 基础设施
 
 | 组件 | AWS 服务 | 说明 |
 |------|---------|------|
@@ -1534,9 +1676,9 @@ Transaction Service
 
 ---
 
-## 十五、数据库设计
+## 十四、数据库设计
 
-### 15.1 Aurora MySQL
+### 14.1 Aurora MySQL
 
 ```sql
 -- ========== 事中风控 ==========
@@ -1549,9 +1691,9 @@ CREATE TABLE risk_rules (
     rule_name       VARCHAR(128) NOT NULL,
     priority        INT NOT NULL DEFAULT 100,
     entry_mode      VARCHAR(10)              COMMENT 'CP/CNP/ALL',
-    condition_expr  TEXT NOT NULL             COMMENT '条件组合JSON: {conditions:[...], logic:"AND/OR"}',
-    action          VARCHAR(20) NOT NULL     COMMENT 'APPROVE/REVIEW/DECLINE/ADD_SCORE',
-    score_delta     INT                      COMMENT 'ADD_SCORE 时的加分值',
+    condition_groups JSON NOT NULL            COMMENT '条件组合JSON: {condition_groups:[...], group_logic:"AND/OR"}',
+    action          VARCHAR(20) NOT NULL     COMMENT 'NONE/APPROVE/DECLINE',
+    score_weight    INT NOT NULL DEFAULT 0   COMMENT '规则命中时累加的评分权重(正整数)',
     suggestions     JSON                     COMMENT '["REQUIRE_3DS"]',
     reason_code     VARCHAR(64),
     enabled         TINYINT(1) DEFAULT 1,
@@ -1560,13 +1702,40 @@ CREATE TABLE risk_rules (
     updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 规则模板
+CREATE TABLE rule_templates (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    template_name   VARCHAR(128) NOT NULL,
+    source          VARCHAR(20) NOT NULL     COMMENT 'PLATFORM/ISO',
+    source_id       VARCHAR(64)              COMMENT 'ISO ID, PLATFORM则为null',
+    description     VARCHAR(512),
+    mcc_scope       VARCHAR(20) DEFAULT 'ALL' COMMENT 'ALL/HIGH_RISK/LOW_RISK/CUSTOM',
+    rules_snapshot  JSON NOT NULL            COMMENT '规则集快照',
+    version         INT NOT NULL DEFAULT 1,
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX idx_template_source ON rule_templates(source, source_id);
+
+-- 租户风控配置（阈值等）
+CREATE TABLE tenant_risk_config (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    tenant_type     VARCHAR(20) NOT NULL     COMMENT 'PLATFORM/ISO',
+    tenant_id       VARCHAR(64) NOT NULL,
+    decline_threshold INT NOT NULL DEFAULT 70 COMMENT 'risk_score >= 此值则DECLINE',
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_tenant (tenant_type, tenant_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 黑白名单
 CREATE TABLE risk_lists (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     tenant_type     VARCHAR(20) NOT NULL     COMMENT 'PLATFORM/ISO/MERCHANT',
     tenant_id       VARCHAR(64) NOT NULL,
-    list_type       VARCHAR(20) NOT NULL     COMMENT 'BLACKLIST/WHITELIST/GREYLIST',
-    dimension       VARCHAR(20) NOT NULL     COMMENT 'CARD_HASH/BIN/IP/DEVICE/EMAIL',
+    list_type       VARCHAR(20) NOT NULL     COMMENT 'BLACKLIST/WHITELIST',
+    dimension       VARCHAR(20) NOT NULL     COMMENT 'CARD_HASH/IP/EMAIL/DEVICE_ID/PHONE/MERCHANT_ID',
     value           VARCHAR(256) NOT NULL,
     enabled         TINYINT(1) DEFAULT 1,
     expires_at      DATETIME(3),
@@ -1576,7 +1745,7 @@ CREATE TABLE risk_lists (
 
 -- 配置版本号（轮询广播机制）
 CREATE TABLE config_versions (
-    config_type VARCHAR(20) PRIMARY KEY      COMMENT 'RULES/LISTS/MODEL',
+    config_type VARCHAR(20) PRIMARY KEY      COMMENT 'RULES/LISTS',
     version     INT NOT NULL DEFAULT 0,
     updated_at  DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -1660,11 +1829,25 @@ CREATE INDEX idx_audit_log_resource ON audit_log(resource_type, resource_id, cre
 CREATE INDEX idx_risk_rules_tenant ON risk_rules(tenant_type, tenant_id, enabled);
 CREATE INDEX idx_risk_lists_lookup ON risk_lists(list_type, dimension, value, tenant_type, tenant_id);
 CREATE INDEX idx_risk_lists_expiry ON risk_lists(enabled, expires_at);
+
+-- 规则豁免（商户×规则）
+CREATE TABLE rule_exemptions (
+    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    merchant_id     VARCHAR(64) NOT NULL,
+    rule_id         BIGINT NOT NULL,
+    reason          VARCHAR(256),
+    created_by      VARCHAR(64) NOT NULL,
+    expires_at      DATETIME(3),
+    created_at      DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY uk_merchant_rule (merchant_id, rule_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX idx_exemption_merchant ON rule_exemptions(merchant_id);
 CREATE INDEX idx_chargeback_txn ON chargeback_records(txn_id);
 CREATE INDEX idx_chargeback_merchant ON chargeback_records(merchant_id, received_at);
 ```
 
-### 15.2 Redshift
+### 14.2 Redshift
 
 ```sql
 -- 交易风控决策日志（Firehose 直投目标表）
@@ -1678,20 +1861,12 @@ CREATE TABLE risk_decision_log (
     risk_score      INT,
     decision        VARCHAR(20),
     triggered_rules VARCHAR(1024),
-    model_version   VARCHAR(32),
     features        SUPER,
     label           VARCHAR(20),
     label_source    VARCHAR(20),
     event_date      DATE
 )
 DISTSTYLE KEY DISTKEY(merchant_id) SORTKEY(event_date, txn_time);
-
--- 模型训练数据视图
-CREATE VIEW v_training_dataset AS
-SELECT features, label, label_source, txn_time
-FROM risk_decision_log
-WHERE label IS NOT NULL
-  AND event_date >= DATEADD(month, -6, CURRENT_DATE);
 
 -- 商户风控指标日聚合视图
 CREATE VIEW v_merchant_daily_metrics AS
@@ -1701,11 +1876,8 @@ SELECT
     SUM(amount) AS txn_amount,
     AVG(amount) AS avg_amount,
     SUM(CASE WHEN decision = 'DECLINE' THEN 1 ELSE 0 END) AS decline_count,
-    SUM(CASE WHEN decision = 'REVIEW' THEN 1 ELSE 0 END) AS review_count,
     ROUND(SUM(CASE WHEN decision = 'DECLINE' THEN 1 ELSE 0 END)::DECIMAL
-          / NULLIF(COUNT(*), 0) * 100, 2) AS decline_rate,
-    ROUND(SUM(CASE WHEN decision = 'REVIEW' THEN 1 ELSE 0 END)::DECIMAL
-          / NULLIF(COUNT(*), 0) * 100, 2) AS review_rate
+          / NULLIF(COUNT(*), 0) * 100, 2) AS decline_rate
 FROM risk_decision_log
 GROUP BY merchant_id, iso_id, event_date;
 
@@ -1731,25 +1903,22 @@ LEFT JOIN (
 
 ---
 
-## 十六、性能设计
+## 十五、性能设计
 
-### 16.1 性能目标与延迟分解
+### 15.1 性能目标与延迟分解
 
 目标：风控决策 P99 < 50ms
 
 ```
 交易请求进入
     │
-    ├─ 并行分支 A: 规则引擎编排执行 (~10ms)
+    ├─ 规则引擎编排执行 (~10ms)
     │     逐条求值原子条件组合 (内存, ~1ms/条)
     │     表达式内部按需调用子引擎:
     │     ├── 黑白名单查询 (Bloom Filter + Redis, ~1ms)
     │     ├── Velocity 查询 & 更新 (Redis, ~2ms)
     │     └── 关联分析查询 (Redis HyperLogLog, ~2ms)
     │     同一规则内多个函数调用通过 Redis Pipeline 并行
-    │
-    └─ 并行分支 B: 评分模型打分 (SageMaker Endpoint, ~15ms, 第二期)
-          打分结果回填 TransactionContext.risk_score
     │
     ▼
   汇总决策 (~1ms)
@@ -1762,16 +1931,15 @@ LEFT JOIN (
 - 规则编译后缓存，轮询版本号触发热加载
 - 黑白名单 Bloom Filter 一级过滤
 - 决策日志异步写入 Firehose → Redshift
-- 模型推理走 SageMaker Endpoint，P99 < 20ms
 - 幂等缓存避免重复计算
 
 ---
 
 # 第四部分：交付规划
 
-## 十七、资源预估
+## 十六、资源预估
 
-### 17.1 云资源明细表
+### 16.1 云资源明细表
 
 | AWS 服务 | 规格 | 预估月成本 |
 |---------|------|-----------|
@@ -1780,10 +1948,9 @@ LEFT JOIN (
 | Redshift Serverless | 8 RPU 基础 | ~$500-1,500 |
 | Data Firehose | 决策日志流式导入 Redshift | ~$15 |
 | EKS | 3-5 × m6i.xlarge | ~$800 |
-| SageMaker | 训练按需 + 推理 ml.m5.large | ~$300 |
 | S3 | 标准存储 | ~$50 |
 | SNS | 告警通知 | ~$5 |
-| **合计** | | **~$3,500-4,500/月** |
+| **合计** | | **~$3,200-4,200/月** |
 
 与 v3 对比：去掉 EventBridge (~$15) + SQS 9队列+9DLQ (~$5) + Lambda 7函数 (~$20)，节省约 $40/月基础设施成本，更重要的是减少了运维复杂度。
 
@@ -1791,9 +1958,9 @@ LEFT JOIN (
 
 ---
 
-## 十八、实施计划
+## 十七、实施计划
 
-### 18.1 第一期 MVP（第 1-3 月）
+### 17.1 第一期 MVP（第 1-3 月）
 
 **事中风控：**
 - 风控引擎核心：规则引擎 + Velocity + 黑白名单
@@ -1804,7 +1971,6 @@ LEFT JOIN (
 **事后风控：**
 - Chargeback 数据导入 + 争议状态流转 + 拒付率计算
 - 决策日志 Firehose 直投 Redshift
-- 特征采集存储（为后续模型训练积累数据）
 
 **前端原型：**
 - 风控操作台全量页面（24 个路由）
@@ -1815,29 +1981,21 @@ LEFT JOIN (
 - 审计日志
 - Aurora + Redis + Redshift + Firehose 部署
 
-### 18.2 第二期 智能化（第 4-6 月）
+### 17.2 第二期 智能化（第 4-6 月）
 
 **事中增强：**
 - 试卡攻击防护、关联分析引擎、交易上下文校验
 
-**评分模型：**
-- XGBoost/LightGBM 模型上线
-- SageMaker 自动训练管道
-- 模型 Shadow 模式 & 灰度发布
-
 **AI 风控助手：**
 - LLM + RAG 后端接入（Amazon Bedrock）
 - 替换原型 mock 响应为实时 API 调用
-- 知识库构建：规则配置、决策日志、模型指标
+- 知识库构建：规则配置、决策日志
 
 **事后增强：**
 - 拒付率实时监控 & 自动预警
 - 退款异常监控
 
-### 18.3 第三期 深度演进（第 7-12 月）
-
-**模型演进：**
-- XGBoost / LightGBM 持续优化（特征工程迭代、A/B 测试）
+### 17.3 第三期 深度演进（第 7-12 月）
 
 **事后深化：**
 - 批量交易回溯分析能力
@@ -1864,8 +2022,7 @@ Velocity 引擎        ✓             ✓
 (第七章)          实时匹配拦截   异常检测→加黑名单
 
 评分模型              ✓
-(第八章)          实时风险打分
-                 (数据来源依赖事后标签)
+(第八章)          规则加权评分
 
 关联分析引擎          ✓             ✓
 (第九章)          实时关联检测    团伙欺诈发现
@@ -1873,13 +2030,10 @@ Velocity 引擎        ✓             ✓
 设备风控引擎          ✓             ✓
 (第十章)          设备完整性校验  设备监控指标
 
-智能闭环              ✓             ✓
-(第十一章)        模型热加载     标注→训练→更新
-
 降级/幂等/轮询广播/Firehose       ✓             ✓
-(第十二章)        降级+幂等      配置广播+日志投递
+(第十一章)        降级+幂等      配置广播+日志投递
 
 AI 风控助手                       ✓             ✓
-(12.5)           规则生成辅助     数据查询+异常检测
-                 交易风险归因     模型诊断+报表解读
+(11.5)           规则生成辅助     数据查询+异常检测
+                 交易风险归因     报表解读
 ```

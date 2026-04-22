@@ -1,45 +1,7 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { rules, fieldOptions, operatorOptions } from '../mock/rules'
+import { rules, fieldOptions, operatorOptions, tenantTree } from '../mock/rules'
 import { deviceCategories, deviceFieldsByCategory } from '../mock/devices'
-
-// Build a sample JSON object from conditions that would MATCH all conditions
-function buildTestJson(conditions) {
-  const obj = {}
-  const set = (path, val) => {
-    const keys = path.split('.')
-    let cur = obj
-    for (let i = 0; i < keys.length - 1; i++) { cur[keys[i]] = cur[keys[i]] || {}; cur = cur[keys[i]] }
-    cur[keys[keys.length - 1]] = val
-  }
-  conditions.forEach(c => {
-    const field = c.field.replace(/['"]/g, '')
-    if (field.includes('(')) {
-      // Generate stub values for function-style fields
-      const v = c.value.replace(/['"]/g, '')
-      const num = Number(v)
-      const stubVal = c.op === '>' ? (isNaN(num) ? 999 : num + 1000) : (isNaN(num) ? 0 : num)
-      // Extract function name as key
-      const fname = field.split('(')[0]
-      set(`_fn.${fname}`, stubVal)
-      // Also extract any dotted args as real paths (e.g. txn.terminal_location)
-      const args = field.match(/[\w.]+/g) || []
-      args.slice(1).forEach(a => { if (a.includes('.')) set(a, a.includes('lat') || a.includes('location') ? 37.7749 : 'sample') })
-      return
-    }
-    const v = c.value.replace(/['"]/g, '')
-    const num = Number(v)
-    if (c.op === '>') set(field, isNaN(num) ? v : num + 1000)
-    else if (c.op === '>=') set(field, isNaN(num) ? v : num)
-    else if (c.op === '<') set(field, isNaN(num) ? v : Math.max(0, num - 1))
-    else if (c.op === '<=') set(field, isNaN(num) ? v : num)
-    else if (c.op === '==' || c.op === 'IN') set(field, isNaN(num) ? v : num)
-    else if (c.op === '!=') set(field, isNaN(num) ? v + '_other' : num + 999)
-    else if (c.op === 'NOT IN') set(field, 'OTHER')
-    else set(field, isNaN(num) ? v : num)
-  })
-  return JSON.stringify(obj, null, 2)
-}
 
 export default function RuleEditor() {
   const { id } = useParams()
@@ -48,164 +10,166 @@ export default function RuleEditor() {
 
   const [name, setName] = useState(existing?.name || '')
   const [decision, setDecision] = useState(existing?.action?.decision || 'DECLINE')
+  const [scoreWeight, setScoreWeight] = useState(existing?.action?.score_weight || 0)
   const [suggestions, setSuggestions] = useState(existing?.action?.suggestions || [])
-  const [conditions, setConditions] = useState(
-    existing?.conditions || [{ field:'txn.amount', op:'>', value:'1000' }]
-  )
-  const [logic, setLogic] = useState(existing?.logic || 'AND')
+  const [tenant, setTenant] = useState(existing?.tenant || 'ISO')
+  const [tenantId, setTenantId] = useState(existing?.tenantId || 'ISO_2001')
+  const [entryMode, setEntryMode] = useState(existing?.entryMode || 'ALL')
   const [deviceCategory, setDeviceCategory] = useState(existing?.device_category || 'ALL')
-  const [testJson, setTestJson] = useState('')
-  const [testResult, setTestResult] = useState(null)
+  const [groups, setGroups] = useState(
+    existing?.condition_groups || [{ logic:'AND', conditions:[{ field:'txn.amount', op:'>', value:'1000' }] }]
+  )
+  const [groupLogic, setGroupLogic] = useState(existing?.group_logic || 'AND')
+  const [saved, setSaved] = useState(false)
 
   const deviceCategoryFields = deviceCategory !== 'ALL' && deviceFieldsByCategory[deviceCategory]
     ? deviceFieldsByCategory[deviceCategory].map(f => ({ key:`device.${f.key}`, label:`device.${f.key}`, group:'Device', desc:f.desc }))
     : []
   const allFieldOptions = [...fieldOptions, ...deviceCategoryFields]
 
-  // Auto-generate test JSON whenever conditions change
-  useEffect(() => {
-    setTestJson(buildTestJson(conditions))
-    setTestResult(null)
-  }, [conditions])
-
   const toggleSuggestion = (s) => setSuggestions(prev => prev.includes(s) ? prev.filter(x=>x!==s) : [...prev, s])
-  const addCondition = () => setConditions([...conditions, { field:'txn.amount', op:'>', value:'' }])
-  const removeCondition = (i) => setConditions(conditions.filter((_,idx) => idx !== i))
-  const updateCondition = (i, key, val) => setConditions(conditions.map((c,idx) => idx === i ? {...c,[key]:val} : c))
 
-  const [saved, setSaved] = useState(false)
+  const updateGroup = (gi, key, val) => setGroups(groups.map((g,i) => i===gi ? {...g,[key]:val} : g))
+  const addGroup = () => setGroups([...groups, { logic:'AND', conditions:[{ field:'txn.amount', op:'>', value:'' }] }])
+  const removeGroup = (gi) => groups.length > 1 && setGroups(groups.filter((_,i) => i!==gi))
+
+  const addCondition = (gi) => updateGroup(gi, 'conditions', [...groups[gi].conditions, { field:'txn.amount', op:'>', value:'' }])
+  const removeCondition = (gi, ci) => {
+    const conds = groups[gi].conditions.filter((_,i) => i!==ci)
+    if (conds.length === 0) removeGroup(gi)
+    else updateGroup(gi, 'conditions', conds)
+  }
+  const updateCondition = (gi, ci, key, val) => updateGroup(gi, 'conditions', groups[gi].conditions.map((c,i) => i===ci ? {...c,[key]:val} : c))
+
   const handleSave = () => { setSaved(true); setTimeout(() => { setSaved(false); nav('/rules') }, 1500) }
 
-  const runTest = () => {
-    if (!testJson.trim()) { setTestResult('ENTER JSON'); return }
-    try {
-      const txn = JSON.parse(testJson)
-      let hit
-      if (logic === 'AND') {
-        hit = conditions.every(c => evaluateCondition(c, txn))
-      } else if (logic === 'OR') {
-        hit = conditions.some(c => evaluateCondition(c, txn))
-      } else {
-        hit = conditions.every(c => evaluateCondition(c, txn)) // default to AND
-      }
-      setTestResult(hit ? 'HIT ✓' : 'NO MATCH')
-    } catch (e) { setTestResult('INVALID JSON: ' + e.message) }
-  }
-
-  const evaluateCondition = (c, txn) => {
-    // Resolve nested field path like "txn.amount" or "card.issuer_country"
-    const fieldPath = c.field.replace(/['"]/g, '')
-    // Skip function-style fields (velocity, link_count, etc) — always treat as matching for demo
-    if (fieldPath.includes('(')) return true
-    const val = fieldPath.split('.').reduce((o, k) => o?.[k], txn)
-    if (val === undefined) return false
-    const numVal = Number(val), numTarget = Number(c.value)
-    const strVal = String(val).replace(/['"]/g, ''), strTarget = c.value.replace(/['"]/g, '')
-    if (c.op === '>') return numVal > numTarget
-    if (c.op === '<') return numVal < numTarget
-    if (c.op === '>=') return numVal >= numTarget
-    if (c.op === '<=') return numVal <= numTarget
-    if (c.op === '==') return strVal === strTarget
-    if (c.op === '!=') return strVal !== strTarget
-    if (c.op === 'IN') return c.value.replace(/[\[\]'"\s]/g, '').split(',').includes(strVal)
-    if (c.op === 'NOT IN') return !c.value.replace(/[\[\]'"\s]/g, '').split(',').includes(strVal)
-    return false
-  }
+  const layerLabel = tenant === 'Platform' ? 'L1 · Platform' : tenant === 'ISO' ? 'L2 · ISO' : 'L3 · Merchant'
 
   return (
     <div className="max-w-[800px] mx-auto">
       <button onClick={() => nav('/rules')} className="text-[13px] text-muted hover:text-black mb-4">← Back to Rules</button>
 
-      <div className="flex items-start justify-between mb-2">
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Rule Name"
-          className="text-2xl font-semibold bg-transparent border-0 border-b border-transparent focus:border-border outline-none w-full pb-1" />
-        <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-          <span className="text-[11px] text-muted tracking-[0.05em] uppercase">Action</span>
-          <select value={decision} onChange={e => setDecision(e.target.value)}
-            className="border border-border px-3 py-1.5 text-[13px] bg-white">
-            <option>APPROVE</option><option>DECLINE</option>
+      {/* Header: Name + Layer badge */}
+      <div className="flex items-center gap-3 mb-1">
+        <span className={`px-2 py-0.5 text-[10px] font-medium tracking-wide ${tenant==='Platform'?'bg-black text-white':'tenant'==='ISO'?'bg-primary/10 text-primary':'bg-surface text-muted'}`}>{layerLabel}</span>
+        <span className="text-[11px] text-muted">{tenantId}</span>
+      </div>
+      <input value={name} onChange={e => setName(e.target.value)} placeholder="Rule Name"
+        className="text-2xl font-semibold bg-transparent border-0 border-b border-transparent focus:border-border outline-none w-full pb-1 mb-2" />
+
+      {/* Layer + Tenant + Mode */}
+      <div className="grid grid-cols-4 gap-4 mb-6 text-[13px]">
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Layer</div>
+          <select value={tenant} onChange={e => setTenant(e.target.value)} className="border border-border px-3 py-1.5 w-full bg-white">
+            <option value="Platform">L1 · Platform</option><option value="ISO">L2 · ISO</option><option value="Merchant">L3 · Merchant</option>
+          </select>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Tenant</div>
+          <select value={tenantId} onChange={e => setTenantId(e.target.value)} className="border border-border px-3 py-1.5 w-full bg-white">
+            {tenantTree.map(t => <optgroup key={t.id} label={t.label}>
+              <option value={t.id}>{t.label}</option>
+              {t.children.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </optgroup>)}
+          </select>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Entry Mode</div>
+          <select value={entryMode} onChange={e => setEntryMode(e.target.value)} className="border border-border px-3 py-1.5 w-full bg-white">
+            <option>ALL</option><option>CP</option><option>CNP</option>
+          </select>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Device Category</div>
+          <select value={deviceCategory} onChange={e => setDeviceCategory(e.target.value)} className="border border-border px-3 py-1.5 w-full bg-white">
+            <option value="ALL">All Devices</option>
+            {deviceCategories.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
           </select>
         </div>
       </div>
 
-      <div className="flex items-center gap-3 text-[12px] text-muted mb-8">
-        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 bg-success" /> Active</span>
-        <span>|</span>
-        <span>Last modified: {existing?.updatedAt || 'now'}</span>
-      </div>
-
-      {/* Device Category */}
-      <div className="mb-6">
-        <span className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium">Device Category</span>
-        <div className="flex gap-3 mt-2">
-          {[{code:'ALL',label:'All Devices'}, ...deviceCategories].map(c => (
-            <label key={c.code} className={`flex items-center gap-1.5 text-[13px] cursor-pointer px-3 py-1.5 border ${deviceCategory === c.code ? 'border-black bg-black text-white' : 'border-border'}`}
-              onClick={() => setDeviceCategory(c.code)}>
-              {c.label}
-            </label>
-          ))}
+      {/* Action: Decision + Score Weight + Suggestions */}
+      <div className="grid grid-cols-3 gap-4 mb-6 text-[13px]">
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Decision</div>
+          <select value={decision} onChange={e => setDecision(e.target.value)} className="border border-border px-3 py-1.5 w-full bg-white">
+            <option>NONE</option><option>APPROVE</option><option>DECLINE</option>
+          </select>
+        </div>
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Score Weight</div>
+          <input type="number" min="0" value={scoreWeight} onChange={e => setScoreWeight(Math.max(0, +e.target.value))}
+            className="border border-border px-3 py-1.5 w-full font-mono" />
+        </div>
+        <div>
+          <div className="text-[11px] text-muted tracking-[0.05em] uppercase mb-1">Suggestions</div>
+          <div className="flex gap-3 mt-1">
+            {['REQUIRE_3DS','REQUIRE_PIN','REQUIRE_OTP'].map(s => (
+              <label key={s} className="flex items-center gap-1 text-[12px] cursor-pointer">
+                <input type="checkbox" checked={suggestions.includes(s)} onChange={() => toggleSuggestion(s)} className="accent-primary" />
+                {s.replace('REQUIRE_','')}
+              </label>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* Suggestions */}
-      <div className="mb-6">
-        <span className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium">Suggestions</span>
-        <div className="flex gap-3 mt-2">
-          {['REQUIRE_3DS','REQUIRE_PIN','REQUIRE_OTP'].map(s => (
-            <label key={s} className="flex items-center gap-1.5 text-[13px] cursor-pointer">
-              <input type="checkbox" checked={suggestions.includes(s)} onChange={() => toggleSuggestion(s)} className="accent-primary" />
-              {s}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {/* Conditions */}
+      {/* Condition Groups */}
       <div className="border-t border-border pt-6 mb-6">
-        <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-4">Conditions</h3>
-        <div className="flex items-center gap-4 mb-3">
-          <div className="text-[13px] font-medium">IF</div>
-          <select value={logic} onChange={e => setLogic(e.target.value)}
-            className="border border-border px-3 py-1.5 text-[13px] bg-white">
-            <option value="AND">ALL conditions match (AND)</option>
-            <option value="OR">ANY condition matches (OR)</option>
-          </select>
-        </div>
-        <div className="space-y-3 ml-4">
-          {conditions.map((c, i) => (
-            <div key={i} className="group">
-              <div className="flex items-center gap-2">
-                {i > 0 && <span className="text-[11px] text-muted tracking-[0.05em] uppercase w-8">{logic}</span>}
-                {i === 0 && <span className="w-8" />}
-                <FieldPicker value={c.field} options={allFieldOptions} onChange={v => updateCondition(i,'field',v)} />
-                <select value={c.op} onChange={e => updateCondition(i,'op',e.target.value)}
-                  className="border border-border px-3 py-1.5 text-[13px] bg-white w-[80px]">
-                  {operatorOptions.map(o => <option key={o}>{o}</option>)}
-                </select>
-                <input value={c.value} onChange={e => updateCondition(i,'value',e.target.value)}
-                  className="border border-border px-3 py-1.5 text-[13px] w-[200px]" placeholder="Value" />
-                <button onClick={() => removeCondition(i)} className="text-muted hover:text-danger opacity-0 group-hover:opacity-100 text-[13px]">×</button>
-              </div>
-              {(() => { const info = allFieldOptions.find(f => f.key === c.field); return info?.desc ? (
-                <div className="ml-8 mt-1 text-[11px] text-muted leading-relaxed">{info.desc}</div>
-              ) : null })()}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium">Condition Groups</h3>
+          {groups.length > 1 && (
+            <div className="flex items-center gap-2 text-[13px]">
+              <span className="text-muted">Group Logic:</span>
+              <select value={groupLogic} onChange={e => setGroupLogic(e.target.value)} className="border border-border px-2 py-1 bg-white text-[13px]">
+                <option value="AND">AND (all groups)</option><option value="OR">OR (any group)</option>
+              </select>
             </div>
-          ))}
-          <button onClick={addCondition} className="text-[13px] text-primary hover:underline ml-8">+ Add Condition</button>
+          )}
         </div>
+
+        {groups.map((g, gi) => (
+          <div key={gi}>
+            {gi > 0 && (
+              <div className="flex items-center gap-3 my-3">
+                <div className="flex-1 border-t border-dashed border-border" />
+                <span className="text-[11px] font-medium text-muted tracking-wide">{groupLogic}</span>
+                <div className="flex-1 border-t border-dashed border-border" />
+              </div>
+            )}
+            <div className="border border-border p-4 mb-2">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] text-muted font-medium">Group {gi+1}</span>
+                  <select value={g.logic} onChange={e => updateGroup(gi,'logic',e.target.value)} className="border border-border px-2 py-1 text-[12px] bg-white">
+                    <option value="AND">AND</option><option value="OR">OR</option>
+                  </select>
+                </div>
+                {groups.length > 1 && <button onClick={() => removeGroup(gi)} className="text-[12px] text-muted hover:text-danger">Remove</button>}
+              </div>
+              <div className="space-y-2">
+                {g.conditions.map((c, ci) => (
+                  <div key={ci} className="group flex items-center gap-2">
+                    {ci > 0 && <span className="text-[10px] text-muted tracking-wide w-8 text-center">{g.logic}</span>}
+                    {ci === 0 && <span className="w-8" />}
+                    <FieldPicker value={c.field} options={allFieldOptions} onChange={v => updateCondition(gi,ci,'field',v)} />
+                    <select value={c.op} onChange={e => updateCondition(gi,ci,'op',e.target.value)} className="border border-border px-2 py-1.5 text-[13px] bg-white w-[72px]">
+                      {operatorOptions.map(o => <option key={o}>{o}</option>)}
+                    </select>
+                    <input value={c.value} onChange={e => updateCondition(gi,ci,'value',e.target.value)} className="border border-border px-3 py-1.5 text-[13px] w-[160px] font-mono" placeholder="Value" />
+                    <button onClick={() => removeCondition(gi,ci)} className="text-muted hover:text-danger opacity-0 group-hover:opacity-100 text-[13px]">×</button>
+                  </div>
+                ))}
+                <button onClick={() => addCondition(gi)} className="text-[12px] text-primary hover:underline ml-8">+ Add Condition</button>
+              </div>
+            </div>
+          </div>
+        ))}
+        <button onClick={addGroup} className="text-[13px] text-primary hover:underline mt-2">+ Add Group</button>
       </div>
 
-      {/* Sandbox Test */}
-      <div className="border-t border-border pt-6 mb-6">
-        <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-3">Sandbox Test</h3>
-        <textarea value={testJson} onChange={e => setTestJson(e.target.value)} rows={4} placeholder='{"txn":{"amount":6000,"entry_mode":"CNP"},"card":{"issuer_country":"GB","type":"CREDIT"},"merchant":{"mcc":"5812"}}'
-          className="w-full border border-border p-3 text-[13px] font-mono resize-none" />
-        <div className="flex items-center gap-3 mt-2">
-          <button onClick={runTest} className="px-4 py-1.5 text-[13px] bg-black text-white">Test Rule</button>
-          {testResult && <span className={`text-[13px] font-mono ${testResult.startsWith('HIT') ? 'text-success' : testResult === 'NO MATCH' ? 'text-muted' : 'text-danger'}`}>{testResult}</span>}
-        </div>
-      </div>
-
+      {/* Save */}
       <div className="border-t border-border pt-6 flex justify-end gap-3">
         {saved && <span className="text-[13px] text-success self-center">✓ Rule saved</span>}
         <button onClick={handleSave} className="px-6 py-2 text-[13px] font-medium bg-black text-white">Save Rule</button>
@@ -216,28 +180,83 @@ export default function RuleEditor() {
 
 function FieldPicker({ value, options, onChange }) {
   const [open, setOpen] = useState(false)
-  const groups = options.reduce((acc, f) => { (acc[f.group] = acc[f.group] || []).push(f); return acc }, {})
+  const [expandedGroup, setExpandedGroup] = useState(() => {
+    // Auto-expand the group of the current value
+    const match = options.find(f => f.key === value)
+    return match?.group || null
+  })
+  const [search, setSearch] = useState('')
+
+  const grouped = options.reduce((acc, f) => { (acc[f.group] = acc[f.group] || []).push(f); return acc }, {})
+  const groupOrder = ['Transaction','Card','Verification','Merchant','Geo','Device','Velocity','Limit','Lists','Score']
+  const sortedGroups = groupOrder.filter(g => grouped[g]).map(g => [g, grouped[g]])
+
+  // Filter by search
+  const filtered = search.trim()
+    ? options.filter(f => f.key.toLowerCase().includes(search.toLowerCase()) || f.desc.toLowerCase().includes(search.toLowerCase()))
+    : null
+
+  const currentField = options.find(f => f.key === value)
+  const displayLabel = currentField ? `${currentField.group} › ${value}` : (value || 'Select field…')
+
   return (
     <div className="relative">
-      <button onClick={() => setOpen(!open)} className="border border-border px-3 py-1.5 text-[13px] bg-white text-left w-[420px] font-mono whitespace-nowrap overflow-x-auto">
-        {value || 'Select field…'}
+      <button onClick={() => { setOpen(!open); setSearch('') }}
+        className="border border-border px-3 py-1.5 text-[13px] bg-white text-left w-[320px] font-mono whitespace-nowrap overflow-hidden text-ellipsis">
+        {displayLabel}
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-border shadow-lg w-[460px] max-h-[400px] overflow-y-auto">
-            {Object.entries(groups).map(([group, fields]) => (
-              <div key={group}>
-                <div className="px-3 py-1.5 text-[10px] text-muted tracking-[0.08em] uppercase font-medium bg-surface sticky top-0">{group}</div>
-                {fields.map(f => (
-                  <div key={f.key} onClick={() => { onChange(f.key); setOpen(false) }}
-                    className={`px-3 py-2 cursor-pointer hover:bg-surface ${f.key === value ? 'bg-primary/5 border-l-2 border-l-primary' : ''}`}>
-                    <div className="font-mono text-[12px]">{f.key}</div>
-                    <div className="text-[11px] text-muted mt-0.5 leading-snug">{f.desc}</div>
+          <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-border shadow-lg w-[420px] max-h-[420px] flex flex-col">
+            {/* Search */}
+            <div className="p-2 border-b border-border">
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search fields…" autoFocus
+                className="w-full border border-border px-2 py-1 text-[12px] outline-none focus:border-primary" />
+            </div>
+
+            <div className="overflow-y-auto flex-1">
+              {/* Search results mode */}
+              {filtered ? (
+                filtered.length === 0 ? (
+                  <div className="px-3 py-4 text-[12px] text-muted text-center">No fields match "{search}"</div>
+                ) : (
+                  filtered.map(f => (
+                    <div key={f.key} onClick={() => { onChange(f.key); setOpen(false) }}
+                      className={`px-3 py-2 cursor-pointer hover:bg-surface ${f.key === value ? 'bg-primary/5 border-l-2 border-l-primary' : ''}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted bg-surface px-1.5 py-0.5">{f.group}</span>
+                        <span className="font-mono text-[12px]">{f.key}</span>
+                      </div>
+                      <div className="text-[11px] text-muted mt-0.5 leading-snug">{f.desc}</div>
+                    </div>
+                  ))
+                )
+              ) : (
+                /* Collapsible group mode */
+                sortedGroups.map(([group, fields]) => (
+                  <div key={group}>
+                    {/* Group header — clickable to expand/collapse */}
+                    <div onClick={() => setExpandedGroup(expandedGroup === group ? null : group)}
+                      className={`px-3 py-2 cursor-pointer flex items-center justify-between hover:bg-surface/80 ${expandedGroup === group ? 'bg-surface' : ''}`}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] w-3 text-muted">{expandedGroup === group ? '▾' : '▸'}</span>
+                        <span className="text-[12px] font-medium">{group}</span>
+                      </div>
+                      <span className="text-[10px] text-muted">{fields.length}</span>
+                    </div>
+                    {/* Expanded fields */}
+                    {expandedGroup === group && fields.map(f => (
+                      <div key={f.key} onClick={() => { onChange(f.key); setOpen(false) }}
+                        className={`pl-8 pr-3 py-1.5 cursor-pointer hover:bg-surface ${f.key === value ? 'bg-primary/5 border-l-2 border-l-primary' : ''}`}>
+                        <div className="font-mono text-[12px]">{f.key}</div>
+                        <div className="text-[11px] text-muted mt-0.5 leading-snug">{f.desc}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            ))}
+                ))
+              )}
+            </div>
           </div>
         </>
       )}

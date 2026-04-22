@@ -12,7 +12,6 @@ const navItems = [
   { label: 'Transactions', to: '/transactions' },
   { label: 'Merchants', to: '/merchants' },
   { label: 'Chargebacks', to: '/chargebacks' },
-  { label: 'Models', to: '/models' },
   { label: 'Reports', to: '/reports' },
   { label: 'Audit', to: '/settings/audit' },
 ]

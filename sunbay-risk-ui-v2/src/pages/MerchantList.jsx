@@ -21,7 +21,6 @@ export default function MerchantList() {
           { key:'riskLevel', label:'Risk', render:v => <StatusBadge status={v} /> },
           { key:'status', label:'Status', render:v => <StatusBadge status={v} /> },
           { key:'chargebackRate', label:'CB Rate', mono:true, align:'right', render:(v) => <MetricTooltip name="CB Rate"><span className={v > 0.9 ? 'text-danger' : v > 0.5 ? 'text-warning' : ''}>{fmt.pct(v)}</span></MetricTooltip> },
-          { key:'settlementCycle', label:'Settlement', mono:true },
         ]}
         data={merchants}
         onRowClick={row => nav(`/merchants/${row.id}`)}

@@ -42,43 +42,53 @@ export default function TransactionDetail() {
         </Section>
       </div>
 
-      <Section title="Risk Decision">
-        <R label="Reason Code" value={t.reasonCode || '—'} />
-        <div className="mt-2 mb-1 text-[11px] text-muted">
-          Score = Σ(Rule Weight × Match) · 0-70 APPROVE · 71+ DECLINE
+      <Section title="Risk Score Breakdown">
+        <div className="flex items-center gap-4 mb-3">
+          <span className="text-[28px] font-mono font-semibold">{t.score}</span>
+          <StatusBadge status={t.decision} />
+          <span className="text-[13px] text-muted">threshold: 70</span>
         </div>
-
+        {/* Score bar */}
+        <div className="relative h-7 bg-surface mb-4 overflow-hidden">
+          <div className="absolute inset-y-0 left-0 bg-success/20" style={{ width: `${Math.min(100, (70 / 140) * 100)}%` }} />
+          <div className="absolute inset-y-0 bg-danger/20" style={{ left: `${(70 / 140) * 100}%`, right: 0 }} />
+          <div className="absolute inset-y-0 w-0.5 bg-danger" style={{ left: `${(70 / 140) * 100}%` }} />
+          <div className="absolute inset-y-0 w-1 bg-black" style={{ left: `${Math.min(100, (t.score / 140) * 100)}%` }} />
+          <div className="absolute bottom-0 text-[9px] font-mono" style={{ left: `${Math.min(95, (t.score / 140) * 100)}%` }}>▲{t.score}</div>
+        </div>
+        {/* Score composition */}
         {t.triggeredRules.length > 0 && (
-          <div className="mt-4">
-            <div className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-2">Triggered Rules ({t.triggeredRules.length})</div>
-            <div className="space-y-2">
-              {t.triggeredRules.map(rId => {
-                const rule = allRules.find(r => r.id === rId)
-                if (!rule) return <div key={rId} className="px-3 py-2 bg-surface text-[13px] font-mono">{rId}</div>
-                const isDevice = rId.startsWith('DEV-')
-                return (
-                  <div key={rId} className="border border-border p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[12px] font-medium">{rId}</span>
-                        <span className="text-[13px]">{rule.name}</span>
-                        {isDevice && <span className="text-[10px] px-1.5 py-0.5 bg-primary/10 text-primary">DEVICE</span>}
-                      </div>
-                      <StatusBadge status={rule.action?.decision || rule.risk_level || ''} />
-                    </div>
-                    <div className="font-mono text-[11px] text-muted mt-1.5 bg-surface px-2 py-1">{rule.condition}</div>
-                    <div className="flex gap-4 mt-1.5 text-[11px] text-muted">
-                      <span>Reason: <span className="font-mono">{rule.reasonCode || rule.reason_code}</span></span>
-                      <span>Tenant: {rule.tenant}</span>
-                      {rule.priority !== undefined && <span>Priority: {rule.priority}</span>}
-                    </div>
+          <div className="space-y-1.5">
+            {t.triggeredRules.map(rId => {
+              const rule = allRules.find(r => r.id === rId)
+              if (!rule) return <div key={rId} className="flex items-center gap-2 text-[12px]"><span className="font-mono w-[60px]">{rId}</span><span className="text-success">✓ HIT</span></div>
+              const w = rule.action?.score_weight || 0
+              return (
+                <div key={rId} className="flex items-center gap-2 text-[12px]">
+                  <span className="font-mono w-[60px] flex-shrink-0">{rId}</span>
+                  <span className="w-[180px] truncate">{rule.name}</span>
+                  <div className="flex-1 h-3 bg-surface overflow-hidden">
+                    {w > 0 && <div className="h-full bg-danger/40" style={{ width: `${(w / 30) * 100}%` }} />}
                   </div>
-                )
-              })}
-            </div>
+                  <span className="font-mono w-[40px] text-right">{w > 0 ? `+${w}` : '—'}</span>
+                  <span className="text-success w-[50px]">✓ HIT</span>
+                </div>
+              )
+            })}
+            {/* Show non-triggered score rules as MISS */}
+            {rules.filter(r => r.action.score_weight > 0 && !t.triggeredRules.includes(r.id)).slice(0, 3).map(r => (
+              <div key={r.id} className="flex items-center gap-2 text-[12px] opacity-40">
+                <span className="font-mono w-[60px] flex-shrink-0">{r.id}</span>
+                <span className="w-[180px] truncate">{r.name}</span>
+                <div className="flex-1 h-3 bg-surface" />
+                <span className="font-mono w-[40px] text-right">0</span>
+                <span className="text-muted w-[50px]">✗ MISS</span>
+              </div>
+            ))}
           </div>
         )}
-        {t.triggeredRules.length === 0 && <div className="mt-2 text-[13px] text-muted">No rules triggered — transaction passed all checks.</div>}
+        {t.triggeredRules.length === 0 && <div className="text-[13px] text-muted">No rules triggered — transaction passed all checks.</div>}
+        <R label="Reason Code" value={t.reasonCode || '—'} />
       </Section>
 
       {t.device && (

@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts'
 import MetricTooltip from '../components/shared/MetricTooltip'
 
-const reportTypes = ['Platform Overview','ISO Report','Merchant Report','Model Monitoring','Device Risk']
+const reportTypes = ['Platform Overview','ISO Report','Merchant Report','Device Risk']
 const COLORS = ['#1890FF','#52C41A','#FF4D4F','#FAAD14','#888']
 
 const platformData = {
@@ -137,35 +137,6 @@ export default function Reports() {
       )}
 
       {type === 3 && (
-        <div>
-          <div className="grid grid-cols-4 gap-6 mb-8 text-[13px]">
-            {[['Model','v2.3_xgb'],['AUC','0.941'],['Precision','0.89'],['Recall','0.84']].map(([l,v])=>(
-              <div key={l} className="border-b border-border pb-3"><div className="text-[11px] text-muted uppercase tracking-wide">{l}</div><div className="text-2xl font-mono mt-1">{v}</div></div>
-            ))}
-          </div>
-          <table className="w-full text-[13px]">
-            <thead><tr className="border-b border-border">
-              <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Metric</th>
-              <th className="text-right text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">This Week</th>
-              <th className="text-right text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Last Week</th>
-              <th className="text-right text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Change</th>
-            </tr></thead>
-            <tbody>
-              {[{m:'AUC-ROC',cur:0.941,prev:0.939,fmt:3,tip:'AUC'},{m:'Precision',cur:0.89,prev:0.88,fmt:2,tip:'Precision'},{m:'Recall',cur:0.84,prev:0.85,fmt:2,tip:'Recall'},{m:'PSI (max)',cur:0.12,prev:0.09,fmt:3,tip:'PSI'}].map(r=>{
-                const delta = r.cur - r.prev; const pct = ((delta/r.prev)*100).toFixed(1)
-                return <tr key={r.m} className="border-b border-border/50">
-                  <td className="py-2"><MetricTooltip name={r.tip}><span>{r.m}</span></MetricTooltip></td>
-                  <td className="py-2 text-right font-mono">{r.cur.toFixed(r.fmt)}</td>
-                  <td className="py-2 text-right font-mono text-muted">{r.prev.toFixed(r.fmt)}</td>
-                  <td className={`py-2 text-right font-mono ${delta>0?'text-success':'text-danger'}`}>{delta>0?'+':''}{pct}%</td>
-                </tr>
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {type === 4 && (
         <div>
           <div className="grid grid-cols-4 gap-6 mb-8 text-[13px]">
             {[['Total Devices',deviceReportData.summary.totalDevices],['Active',deviceReportData.summary.activeDevices],['Blocked',deviceReportData.summary.blockedDevices],['Suspended',deviceReportData.summary.suspendedDevices]].map(([l,v])=>(
