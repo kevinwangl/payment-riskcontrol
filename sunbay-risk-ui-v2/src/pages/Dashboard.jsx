@@ -152,13 +152,15 @@ export default function Dashboard() {
           <h3 className="text-sm font-semibold mb-3">Highest Risk Entities</h3>
           <table className="w-full text-[13px]">
             <thead><tr className="border-b border-border">
-              <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Entity (BIN / IP)</th>
+              <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Entity</th>
+              <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Type</th>
               <th className="text-left text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Risk Score</th>
               <th className="text-right text-[11px] text-muted tracking-[0.05em] uppercase font-medium py-2">Hit Count</th>
             </tr></thead>
             <tbody>{topEntities.map(e=>(
               <tr key={e.entity} className="border-b border-border/50 hover:bg-surface">
                 <td className="py-2 font-mono">{e.entity}</td>
+                <td className="py-2">{e.type}</td>
                 <td className="py-2 font-mono text-danger">{e.riskScore}</td>
                 <td className="py-2 text-right font-mono">{fmt.num(e.hitCount)}</td>
               </tr>
