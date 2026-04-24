@@ -14,6 +14,7 @@ import MerchantDetail from './pages/MerchantDetail'
 import ChargebackImport from './pages/ChargebackImport'
 import ChargebackMonitoring from './pages/ChargebackMonitoring'
 import Reports from './pages/Reports'
+import Analytics from './pages/Analytics'
 import AuditLog from './pages/AuditLog'
 import Login from './pages/Login'
 
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="/chargebacks" element={<ChargebackImport />} />
         <Route path="/chargebacks/monitoring" element={<ChargebackMonitoring />} />
         <Route path="/reports" element={<Reports />} />
+        <Route path="/analytics" element={<Analytics />} />
         <Route path="/settings/audit" element={<AuditLog />} />
         <Route path="*" element={<div className="text-center py-20"><div className="text-[64px] font-mono text-muted">404</div><div className="text-muted mt-2">Page not found</div></div>} />
       </Route>

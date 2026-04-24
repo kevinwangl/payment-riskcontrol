@@ -20,6 +20,7 @@ export default function TransactionLedger() {
   return (
     <div>
       <h1 className="text-xl font-semibold mb-4">Transaction Ledger</h1>
+
       <div className="mb-4">
         <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Search by ID, merchant, or status..."
           className="border-0 border-b border-border pb-2 text-[13px] w-[400px] outline-none focus:border-primary font-mono" />

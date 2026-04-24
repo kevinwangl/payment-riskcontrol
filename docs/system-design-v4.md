@@ -1401,11 +1401,30 @@ class TransactionContext {
 
 ### 10.6 设备风控前端集成
 
-> 原型已实现。设备风控信息嵌入现有页面展示，不新增独立页面。
+> 原型已实现。设备风控信息嵌入现有页面展示。
 
-**Dashboard — 设备风控区块：**
-- 4 个设备 KPI 卡片（Attestation 失败率、Geofence 触发率、COTS 设备占比、设备规则命中数）
-- 4 个趋势图（鉴证趋势、围栏趋势、设备类别分布、规则触发趋势）
+**Dashboard（`/dashboard`）— Risk Overview 三层布局：**
+
+Layer 1 — KPI 行（3 个）：
+- Total Transactions、Decline Rate、Chargeback Rate
+
+Layer 2 — 交易拒绝分析：
+- Decline Reasons (7d) 堆叠面积图（Velocity / Blacklist / Limit / Device / Other）
+
+Layer 3 — Device Security 区块：
+- 总览行：设备总数 + HIGH_RISK 设备数
+- 左图：Issues by Type 水平条形图（Root/Jailbreak、FW Outdated、Attest Failed 等 8 类安全问题按数量排序）
+- 右图：Affected Models TreeMap 矩形树图（面积=受影响设备数，颜色按类别：COTS 红/POS 绿/Dedicated 蓝，标签=型号+数量+issue）
+- 趋势图：Security Threats (30d) 多线图（Root/Jailbreak + Attest Fail 实线，Debug Mode + Geofence 虚线）
+
+设备型号覆盖：
+- Certified POS：SUNMI P2、P3、P3H、P3K、P3KH
+- Dedicated Device：SUNMI V2s、CPad Pay
+- COTS Device：OPPO A78、Samsung Galaxy S25、Xiaomi 14、Google Pixel 9 等
+
+**Analytics（`/analytics`）— Risk Analytics 独立页面：**
+- Top Breached Rules + Highest Risk Entities（左右两列表格）
+- Top Affected Devices 完整表格（型号 + 类别 + 安全问题 + 数量 + 风险等级）
 
 **Rule Editor — 设备字段支持：**
 - Device Category 选择器（ALL / CERTIFIED_POS / DEDICATED_DEVICE / COTS_DEVICE）
