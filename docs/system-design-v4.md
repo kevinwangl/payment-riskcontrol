@@ -1072,6 +1072,28 @@ ISO 在副本上调整阈值、增删规则
 }
 ```
 
+### 5.5 规则列表页 — 级联生效视角
+
+> 原型已实现。规则列表页左侧 Tenant Tree 采用**级联生效视角**（Effective Rules View），展示选中租户实际生效的完整规则集。
+
+**筛选逻辑：**
+
+| 选中节点 | 显示的规则 | 说明 |
+|---------|-----------|------|
+| All Rules | 全部规则 | 总览/管理视角 |
+| Platform | 仅 L1 Platform 规则 | 平台强制规则 |
+| ISO Alpha Corp | L1 Platform + L2 ISO_2001 | ISO 实际生效的规则集 |
+| Merchant QuickMart | L1 Platform + L2 ISO_2001 + L3 M_1001 | 商户实际生效的完整规则集 |
+
+**层级可编辑性：**
+- 当前选中租户自己的规则层：正常显示，可编辑
+- 继承的上层规则：半透明显示（`opacity-60`），标注 `🔒 Inherited · read-only`
+
+示例：选中 Merchant QuickMart 时：
+- L1 Platform → 🔒 Inherited · read-only（半透明）
+- L2 ISO Alpha Corp → 🔒 Inherited · read-only（半透明）
+- L3 Merchant → 正常显示，可编辑
+
 ## 六、Velocity 引擎
 
 > 主要服务事中（实时频率/金额检测）和事后（异常检测的基础数据）。
@@ -1172,36 +1194,52 @@ FOR each rule (按层级 L1 → L2 → L3 执行):
 
 ### 8.3 评分公式可视化
 
-**规则列表页 — 评分公式面板：**
+**规则列表页 — 评分公式面板（折叠式摘要条）：**
 
-展示当前 ISO 所有带 score_weight 的规则及其权重，帮助管理员理解评分构成：
+评分公式是 ISO 级别的配置，仅在 ISO / Merchant 视角下显示。All Rules 和 Platform 视角不显示（因为不存在全局评分体系）。
+
+面板默认折叠为一行摘要条，点击展开查看完整详情：
 
 ```
+折叠状态（默认）：
 ┌─────────────────────────────────────────────────────────────┐
-│ Risk Score Formula — ISO: Acme Payments                     │
-│                                                             │
-│ risk_score = Σ (命中规则的 score_weight)                     │
-│                                                             │
-│ Rule              Condition (简写)        Weight  Status    │
-│ ─────────────────────────────────────────────────────────── │
-│ R2001 跨境卡交易   issuer_country != US     +15   ✓ On     │
-│ R2002 高额CNP无3DS amount>3000 & CNP & !3DS +25   ✓ On     │
-│ R2003 AVS不匹配    avs_result == N          +20   ✓ On     │
-│ R2004 CVV不匹配    cvv_result == N          +25   ✓ On     │
-│ R2005 高频交易      card 1h > 3次            +20   ✓ On     │
-│ R2006 新商户        merchant_age < 90天      +10   ✓ On     │
-│ R2007 CNP交易       entry_mode == CNP        +10   ✓ On     │
-│                          Max Possible Score:  125           │
-│                                                             │
-│ Decline Threshold: [70]  ▲ ISO 可调整                       │
+│ ▸ Risk Score │ Threshold ≥70 → DECLINE │ 7 rules │ Max: 125│
+└─────────────────────────────────────────────────────────────┘
+
+Merchant 视角下额外标注来源：
+┌─────────────────────────────────────────────────────────────┐
+│ ▸ Risk Score │ Threshold ≥70 → DECLINE │ 7 rules │ Max: 125│
+│                                    Inherited from ISO Alpha │
+└─────────────────────────────────────────────────────────────┘
+
+展开状态（点击 ▸ 后）：
+┌─────────────────────────────────────────────────────────────┐
+│ ▾ Risk Score │ Threshold ≥70 → DECLINE │ 7 rules │ Max: 125│
+│─────────────────────────────────────────────────────────────│
+│ Decline Threshold: [score ≥ 70 → DECLINE]                   │
+│ risk_score = Σ (hit rules × score_weight)                   │
 │                                                             │
 │  0              70             125                          │
 │  ├──────────────┼──────────────┤                           │
 │  │   APPROVE    │   DECLINE    │                           │
 │  ■■■■■■■■■■■■■■▓▓▓▓▓▓▓▓▓▓▓▓▓▓                           │
 │  green          red                                         │
+│                                                             │
+│ S001  Foreign Card Score     issuer_country != US      +15  │
+│ S002  High Amount CNP Score  amount > 3000 & CNP       +25  │
+│ S003  AVS Mismatch Score     avs_result == N           +20  │
+│ S004  CVV Mismatch Score     cvv_result == N           +25  │
+│ S005  High Velocity Score    card 1h > 3               +20  │
+│ S006  New Merchant Score     merchant_age < 90         +10  │
+│ S007  CNP Entry Score        entry_mode == CNP         +10  │
+│                                            Total      = 125 │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+显示规则：
+- **All Rules / Platform 视角**：不显示评分面板（无单一评分体系）
+- **ISO 视角**：显示该 ISO 的评分面板（可编辑 Threshold）
+- **Merchant 视角**：显示父 ISO 的评分面板，标注 `Inherited from {ISO名称}`
 
 **交易详情页 — 评分分解指示器：**
 
