@@ -1089,10 +1089,31 @@ ISO 在副本上调整阈值、增删规则
 - 当前选中租户自己的规则层：正常显示，可编辑
 - 继承的上层规则：半透明显示（`opacity-60`），标注 `🔒 Inherited · read-only`
 
+**层级展示排序：**
+
+当前层级优先展示，继承层级置后：
+
+| 选中节点 | 展示顺序 | 说明 |
+|---------|---------|------|
+| All Rules / Platform | L1 → L2 → L3 | 按引擎执行顺序 |
+| ISO | L2 → L1 | 自己的规则在前，继承的 Platform 在后 |
+| Merchant | L3 → L2 → L1 | 自己的规则在前，继承的 ISO、Platform 在后 |
+
 示例：选中 Merchant QuickMart 时：
-- L1 Platform → 🔒 Inherited · read-only（半透明）
+- L3 Merchant → 正常显示，可编辑（置顶）
 - L2 ISO Alpha Corp → 🔒 Inherited · read-only（半透明）
-- L3 Merchant → 正常显示，可编辑
+- L1 Platform → 🔒 Inherited · read-only（半透明）
+
+**Mock 数据覆盖：**
+
+| 层级 | 规则数 | 覆盖范围 |
+|------|--------|---------|
+| L1 Platform | 7 条 | 全局强制规则（OFAC、限额、冻结商户、试卡攻击等） |
+| L2 ISO_2001 (Alpha Corp) | 15 条 | 7 score + 8 decision |
+| L2 ISO_2002 (Beta Pay) | 11 条 | 6 score + 5 decision |
+| L3 Merchant | 29 条 | 全部 15 个商户均有 1-3 条自定义规则 |
+
+L3 规则按商户业务类型差异化设计（如 LuxRetail 预付卡拦截、GasStation 快速刷卡拦截、OnlineShop VPN 拦截等）。
 
 ## 六、Velocity 引擎
 

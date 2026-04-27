@@ -40,7 +40,8 @@ export default function RuleList() {
   // Determine which tenantId is the "own" editable layer
   const editableTenantId = selectedTenant
 
-  const grouped = layers.map(l => ({ ...l, rules: filtered.filter(r => r.tenant === l.key) })).filter(g => g.rules.length > 0)
+  const grouped = (isMerchant ? [...layers].reverse() : isISO ? [layers[1], layers[0], layers[2]] : layers)
+    .map(l => ({ ...l, rules: filtered.filter(r => r.tenant === l.key) })).filter(g => g.rules.length > 0)
 
   const scoreRules = filtered.filter(r => r.action.score_weight > 0 && r.enabled)
   const maxScore = scoreRules.reduce((s, r) => s + r.action.score_weight, 0)
