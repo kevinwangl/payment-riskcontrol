@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { createPortal } from 'react-dom'
 
 const metrics = {
   // Rate metrics
@@ -48,6 +49,11 @@ const metrics = {
   'PTS Cert Expired': { formula: 'PTS Expired Rate = Devices with Expired PCI PTS Cert / Total POS Devices × 100%', desc: 'PCI PTS certification ensures hardware meets payment security standards. Expired certs mean the device no longer meets current security requirements. Threshold: < 1%.' },
   'Tamper Detected': { formula: 'Tamper Rate = Devices with Tamper Flag / Total POS Devices × 100%', desc: 'Hardware tamper detection triggered — device may have been physically compromised (skimmer installed, case opened). Any detection is critical.' },
   'Firmware Outdated': { formula: 'FW Outdated Rate = Devices below Min Firmware Version / Total POS Devices × 100%', desc: 'Outdated firmware may contain known vulnerabilities. Devices should be updated to the minimum required version. Threshold: < 2%.' },
+  // Refund metrics
+  'Refund Rate': { formula: 'Refund Rate = (Refund Count / Total Transaction Count) × 100% (30-day rolling)', desc: 'Monthly ratio of refund transactions to total transactions. > 10% triggers WARNING, > 15% triggers CRITICAL. High refund rate may indicate friendly fraud or money laundering.' },
+  'Amount Ratio': { formula: 'Amount Ratio = (Total Refund Amount / Total Transaction Amount) × 100% (30-day rolling)', desc: 'Ratio of refunded dollar volume to total transaction volume. > 15% is a strong money laundering signal. Threshold: WARNING at 10-15%, CRITICAL at > 15%.' },
+  'Full Refund Ratio': { formula: 'Full Refund Ratio = (Refunds where amount = original amount) / Total Refunds × 100%', desc: 'Percentage of refunds that are full (100%) refunds. > 80% indicates abnormal pattern — possible fake transactions followed by full refunds (money laundering or friendly fraud).' },
+  'Fast Refund Rate': { formula: 'Fast Refund Rate = (Refunds where time_to_refund < 1 hour) / Total Refunds × 100%', desc: 'Percentage of refunds initiated within 1 hour of the original transaction. > 30% is highly suspicious — may indicate testing, automated fraud scripts, or money laundering schemes.' },
   // Aliases for table short names
   'Attest Failed': { formula: 'Attestation Fail Rate = (FAILED + EXPIRED) / Total Verifications × 100%', desc: 'Device integrity attestation (Play Integrity / DeviceCheck) failed or expired. Indicates compromised device or SDK issue. Target: < 1%.' },
   'FW Outdated': { formula: 'FW Outdated Rate = Devices below Min Firmware Version / Total POS Devices × 100%', desc: 'Outdated firmware may contain known vulnerabilities. Devices should be updated to the minimum required version. Threshold: < 2%.' },
@@ -60,22 +66,23 @@ export default function MetricTooltip({ name, children }) {
   if (!info) return children
 
   return (
-    <span className="relative inline-flex items-center gap-1">
+    <span className="inline-flex items-center gap-1">
       {children}
       <button onClick={() => setShow(!show)} className="text-muted hover:text-primary text-[10px] border border-border/60 w-3.5 h-3.5 inline-flex items-center justify-center leading-none flex-shrink-0">?</button>
-      {show && (
+      {show && createPortal(
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setShow(false)} />
-          <div className="fixed z-50 bg-white border border-border p-3 w-[320px] shadow-lg text-[12px]"
+          <div className="fixed inset-0 z-[9998]" onClick={() => setShow(false)} />
+          <div className="fixed z-[9999] bg-white border border-border p-4 w-[400px] shadow-lg text-[12px]"
             style={{ top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }}>
-            <div className="flex items-center justify-between mb-1">
-              <div className="font-medium">{name}</div>
-              <button onClick={() => setShow(false)} className="text-muted hover:text-black text-[14px]">✕</button>
+            <div className="flex items-center justify-between mb-2">
+              <div className="font-medium text-[13px]">{name}</div>
+              <button onClick={() => setShow(false)} className="text-muted hover:text-black text-[14px] leading-none">✕</button>
             </div>
-            <div className="font-mono text-[11px] bg-surface p-1.5 mb-2 text-primary whitespace-pre-wrap">{info.formula}</div>
+            <div className="font-mono text-[11px] bg-surface p-2 mb-2 text-primary whitespace-pre-wrap break-words">{info.formula}</div>
             <div className="text-muted leading-relaxed">{info.desc}</div>
           </div>
-        </>
+        </>,
+        document.body
       )}
     </span>
   )

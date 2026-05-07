@@ -13,6 +13,9 @@ import MerchantList from './pages/MerchantList'
 import MerchantDetail from './pages/MerchantDetail'
 import ChargebackImport from './pages/ChargebackImport'
 import ChargebackMonitoring from './pages/ChargebackMonitoring'
+import ChargebackDetail from './pages/ChargebackDetail'
+import RefundMonitoring from './pages/RefundMonitoring'
+import RefundMerchantDetail from './pages/RefundMerchantDetail'
 import Reports from './pages/Reports'
 import Analytics from './pages/Analytics'
 import AuditLog from './pages/AuditLog'
@@ -35,7 +38,10 @@ export default function App() {
         <Route path="/merchants" element={<MerchantList />} />
         <Route path="/merchants/:id" element={<MerchantDetail />} />
         <Route path="/chargebacks" element={<ChargebackImport />} />
+        <Route path="/chargebacks/:id" element={<ChargebackDetail />} />
         <Route path="/chargebacks/monitoring" element={<ChargebackMonitoring />} />
+        <Route path="/refunds/monitoring" element={<RefundMonitoring />} />
+        <Route path="/refunds/monitoring/:merchantId" element={<RefundMerchantDetail />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/settings/audit" element={<AuditLog />} />

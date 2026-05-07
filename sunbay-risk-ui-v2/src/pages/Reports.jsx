@@ -1,8 +1,8 @@
 import React, { useState } from 'react'
-import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts'
+import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, ReferenceLine } from 'recharts'
 import MetricTooltip from '../components/shared/MetricTooltip'
 
-const reportTypes = ['Platform Overview','ISO Report','Merchant Report','Device Risk']
+const reportTypes = ['Platform Overview','ISO Report','Merchant Report','Device Risk','Refund Analysis']
 const COLORS = ['#1890FF','#52C41A','#FF4D4F','#FAAD14','#888']
 
 const platformData = {
@@ -17,6 +17,14 @@ const merchantData = {
 }
 
 const days30 = Array.from({length:30},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-29+i); return d.toISOString().slice(0,10) })
+
+const refundReportData = {
+  summary: { refundRate:7.8, amountRatio:8.9, fullRefundRatio:52, fastRefundRate:15 },
+  trend: [{month:'Jan',rate:5.2},{month:'Feb',rate:6.1},{month:'Mar',rate:6.8},{month:'Apr',rate:7.5},{month:'May',rate:7.8},{month:'Jun',rate:8.2}],
+  topMerchants: [{name:'JewelBox',rate:18.5,alert:'CRITICAL'},{name:'GameZone',rate:14.2,alert:'CRITICAL'},{name:'TravelCo',rate:11.3,alert:'WARNING'},{name:'TechStore',rate:9.8,alert:'WARNING'},{name:'OnlineShop',rate:8.5,alert:'INFO'}],
+  reasonBreakdown: [{name:'Customer Request',value:35},{name:'Defective Item',value:22},{name:'Not as Described',value:18},{name:'Duplicate Charge',value:12},{name:'No Reason',value:13}],
+}
+
 const deviceReportData = {
   summary: { totalDevices:156, activeDevices:142, blockedDevices:8, suspendedDevices:6 },
   categoryBreakdown: [{name:'COTS_DEVICE',value:45},{name:'CERTIFIED_POS',value:35},{name:'DEDICATED_DEVICE',value:20}],
@@ -229,6 +237,51 @@ export default function Reports() {
         </div>
       )}
 
+
+      {type === 4 && (
+        <div>
+          <div className="grid grid-cols-4 gap-6 mb-8 text-[13px]">
+            {[['Refund Rate',refundReportData.summary.refundRate+'%'],['Amount Ratio',refundReportData.summary.amountRatio+'%'],['Full Refund %',refundReportData.summary.fullRefundRatio+'%'],['Fast Refund %',refundReportData.summary.fastRefundRate+'%']].map(([l,v])=>(
+              <div key={l} className="border-b border-border pb-3"><MetricTooltip name={l==='Refund Rate'?'Refund Rate':l==='Amount Ratio'?'Amount Ratio':l==='Full Refund %'?'Full Refund Ratio':'Fast Refund Rate'}><span className="text-[11px] text-muted uppercase tracking-wide">{l}</span></MetricTooltip><div className="text-2xl font-mono mt-1">{v}</div></div>
+            ))}
+          </div>
+
+          <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-4">Refund Rate Trend (6 months)</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={refundReportData.trend}>
+              <XAxis dataKey="month" tick={{fontSize:11,fill:'#888'}} axisLine={{stroke:'#eaeaea'}} tickLine={false} />
+              <YAxis tick={{fontSize:11,fill:'#888',fontFamily:'JetBrains Mono'}} axisLine={false} tickLine={false} tickFormatter={v=>`${v}%`} domain={[0,15]} />
+              <Tooltip contentStyle={{fontSize:12,border:'1px solid #eaeaea',borderRadius:0}} formatter={v=>`${v}%`} />
+              <ReferenceLine y={10} stroke="#FF4D4F" strokeDasharray="4 4" label={{value:'10% WARNING',fontSize:10,fill:'#FF4D4F',position:'right'}} />
+              <ReferenceLine y={15} stroke="#FF4D4F" strokeDasharray="4 4" label={{value:'15% CRITICAL',fontSize:10,fill:'#FF4D4F',position:'right'}} />
+              <Line type="monotone" dataKey="rate" stroke="#1890FF" strokeWidth={2} dot />
+            </LineChart>
+          </ResponsiveContainer>
+
+          <div className="grid grid-cols-2 gap-12 mt-8">
+            <div>
+              <h3 className="text-sm font-semibold mb-3">Top Refund Rate Merchants</h3>
+              <table className="w-full text-[13px]">
+                <tbody>{refundReportData.topMerchants.map(m=>(
+                  <tr key={m.name} className="border-b border-border/50">
+                    <td className="py-2">{m.name}</td>
+                    <td className={`py-2 text-right font-mono ${m.rate>10?'text-danger':''}`}>{m.rate}%</td>
+                    <td className="py-2 text-right"><span className={`text-[11px] px-1.5 py-0.5 ${m.alert==='CRITICAL'?'text-danger bg-danger/10':m.alert==='WARNING'?'text-warning bg-warning/10':'text-muted bg-muted/10'}`}>{m.alert}</span></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <div>
+              <h3 className="text-[11px] text-muted tracking-[0.05em] uppercase font-medium mb-4">Refund Reason Distribution</h3>
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart><Pie data={refundReportData.reasonBreakdown} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75} label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} labelLine={false} fontSize={10}>
+                  {refundReportData.reasonBreakdown.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]} />)}
+                </Pie><Tooltip /></PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mt-8 flex justify-end"><button onClick={() => alert("PDF export started")} className="px-4 py-2 text-[13px] border border-border hover:bg-surface">Export PDF</button></div>
     </div>
   )

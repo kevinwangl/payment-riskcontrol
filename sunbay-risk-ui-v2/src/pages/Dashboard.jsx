@@ -2,6 +2,7 @@ import React from 'react'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, Legend, Cell, Treemap } from 'recharts'
 import MetricTooltip from '../components/shared/MetricTooltip'
 import { dashboardData } from '../mock/dashboard'
+import { platformKPI } from '../mock/refunds'
 import { fmt } from '../utils/format'
 
 const catColor = { COTS: '#FF4D4F', Dedicated: '#1890FF', POS: '#52C41A' }
@@ -50,15 +51,16 @@ export default function Dashboard() {
       </div>
 
       {/* Layer 1: KPI */}
-      <div className="grid grid-cols-3 gap-8 mb-10">
+      <div className="grid grid-cols-4 gap-8 mb-10">
         {[
           { label: 'Total Transactions', value: fmt.num(kpis.totalTransactions) },
           { label: 'Decline Rate', value: fmt.pct(kpis.declineRate), tooltip: 'Decline Rate' },
           { label: 'Chargeback Rate', value: fmt.pct(kpis.cbRate), tooltip: 'CB Rate' },
+          { label: 'Refund Rate', value: fmt.pct(platformKPI.refundRate), tooltip: 'Refund Rate' },
         ].map(k => (
           <div key={k.label} className="py-3 border-b border-border">
             {k.tooltip
-              ? <MetricTooltip name={k.tooltip}><div className="text-[11px] text-muted tracking-[0.08em] uppercase">{k.label}</div></MetricTooltip>
+              ? <MetricTooltip name={k.tooltip}><span className="text-[11px] text-muted tracking-[0.08em] uppercase">{k.label}</span></MetricTooltip>
               : <div className="text-[11px] text-muted tracking-[0.08em] uppercase">{k.label}</div>}
             <div className="text-[28px] font-mono mt-1">{k.value}</div>
           </div>

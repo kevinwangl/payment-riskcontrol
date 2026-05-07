@@ -12,6 +12,7 @@ const navItems = [
   { label: 'Transactions', to: '/transactions' },
   { label: 'Merchants', to: '/merchants' },
   { label: 'Chargebacks', to: '/chargebacks' },
+  { label: 'Refunds', to: '/refunds/monitoring' },
   { label: 'Reports', to: '/reports' },
   { label: 'Analytics', to: '/analytics' },
   { label: 'Audit', to: '/settings/audit' },

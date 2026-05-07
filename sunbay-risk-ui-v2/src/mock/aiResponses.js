@@ -28,6 +28,12 @@ const responses = {
   // Chargeback context
   '争议': { text: '当前 Chargeback 概况：\n• PENDING 待处理：8 笔\n• 本月已结案：4 笔（WON 2, LOST 2）\n• 本月胜诉率：50%\n\n⚠ CB006（JewelBox, $890）建议关注，该商户 CB 率接近 Visa 阈值。', links: [{ label: '查看 CB 记录', to: '/chargebacks' }] },
   '抗辩': { text: '针对 Visa 10.4（Fraud - Card Absent）的抗辩建议：\n\n必备证据：\n1. 3DS 验证记录（如有）\n2. AVS/CVV 匹配结果\n3. 发货证明 + 签收记录\n4. 客户历史交易记录\n5. IP/设备与持卡人关联证据\n\n胜诉概率评估：有 3DS 记录 → 75%，无 3DS → 30%。', links: [] },
+
+  // Refund monitoring context
+  '退款': { text: '退款异常监控概况：\n• 平台退款率：7.8%（阈值 10%）\n• 退款金额占比：8.9%（阈值 15%）\n\n⚠ 高风险商户：\n1. JewelBox — 退款率 18.5%，全额退款占比 85%，疑似虚假交易\n2. GameZone — 退款率 14.2%，夜间快速退款集中\n\n建议优先调查 JewelBox。', links: [{ label: '退款监控', to: '/refunds/monitoring' }, { label: '查看 JewelBox', to: '/refunds/monitoring/M_1005' }] },
+  'refund': { text: '退款异常监控概况：\n• 平台退款率：7.8%（阈值 10%）\n• 退款金额占比：8.9%（阈值 15%）\n\n⚠ 高风险商户：\n1. JewelBox — 退款率 18.5%，全额退款占比 85%\n2. GameZone — 退款率 14.2%，快速退款率 35%\n\n建议优先调查 JewelBox。', links: [{ label: '退款监控', to: '/refunds/monitoring' }] },
+  '退款率最高': { text: 'JewelBox 退款率 18.5%，远超 10% 告警阈值。\n\n异常特征：\n• 全额退款占比 85%（阈值 80%）\n• 快速退款率 42%（交易后 < 1h 退款）\n• 同卡 ****3847 在 30 天内退款 4 次\n\n风险判断：高度疑似虚假交易 + 洗钱模式。\n建议：通知商户管理系统冻结结算。', links: [{ label: '查看详情', to: '/refunds/monitoring/M_1005' }] },
+  '异常退款': { text: '检测到以下异常退款模式：\n\n1. JewelBox — 全额退款 85% + 快速退款 42%（CRITICAL）\n2. GameZone — 夜间退款集中（22:00-01:00），退款金额突增 5.2x（CRITICAL）\n3. TravelCo — 退款率 11.3%，连续 2 个月超阈值（WARNING）\n\n建议按优先级处理 #1 和 #2。', links: [{ label: '退款监控', to: '/refunds/monitoring' }] },
 }
 
 // Fallback
@@ -57,6 +63,8 @@ export const pagePrompts = {
   '/merchants/': ['这个商户的风险概况', '该商户拒付率趋势', '建议调整商户风控策略吗？'],
   '/chargebacks': ['当前争议概况', '抗辩建议', '拒付率趋势'],
   '/chargebacks/monitoring': ['拒付率最高的商户？', '有哪些商户接近阈值？'],
+  '/refunds/monitoring': ['退款率最高的商户？', '有异常退款模式吗？', '退款监控概况'],
+  '/refunds/monitoring/': ['这个商户退款有什么异常？', '同卡退款分析', '建议处置措施'],
   '/reports': ['本周风控总结', '拒付率趋势分析'],
   '/settings/audit': ['最近有哪些敏感操作？', '谁修改了规则配置？'],
 }

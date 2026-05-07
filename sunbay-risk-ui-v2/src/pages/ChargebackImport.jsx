@@ -18,16 +18,17 @@ export default function ChargebackImport() {
       </div>
       <DataTable
         columns={[
-          { key:'id', label:'CB ID', mono:true },
+          { key:'id', label:'CB ID', mono:true, render:(v) => <span className="text-primary cursor-pointer hover:underline">{v}</span> },
           { key:'txnId', label:'Txn ID', mono:true },
           { key:'merchantName', label:'Merchant' },
           { key:'cardBrand', label:'Brand' },
           { key:'reasonCode', label:'Reason', render:(v, row) => <div><span className="font-mono">{v}</span><div className="text-[11px] text-muted">{row.reasonDesc}</div></div> },
           { key:'amount', label:'Amount', mono:true, align:'right', render:v => fmt.usd(v) },
-          { key:'outcome', label:'Outcome', render:v => <StatusBadge status={v || 'PENDING'} /> },
+          { key:'status', label:'Status', render:v => <StatusBadge status={v || 'RECEIVED'} /> },
           { key:'receivedAt', label:'Received', render:v => fmt.date(v) },
         ]}
         data={chargebacks}
+        onRowClick={(row) => nav(`/chargebacks/${row.id}`)}
       />
     </div>
   )
