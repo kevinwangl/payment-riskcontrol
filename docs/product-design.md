@@ -1,0 +1,1230 @@
+# 收单支付 SaaS 平台 — 风控系统产品设计
+
+> 版本: v4.1
+> 日期: 2026-05-07
+> 受众: 产品经理、业务分析师
+
+---
+
+## 目录
+
+- 一、项目概述
+- 二、事中风控 — 实时决策
+- 三、事后风控 — 监控与数据回流
+- 四、阶段联动机制
+- 五、规则体系
+- 六、评分模型
+- 七、设备风控
+- 八、前端页面设计
+- 九、AI 风控助手
+- 十、交付规划
+- 附录：能力 × 阶段映射矩阵
+
+---
+
+## 一、项目概述
+
+### 1.1 业务背景
+
+面向美国本地市场，为 ISO（Independent Sales Organization）/ ISV（Independent Software Vendor）提供收单支付 SaaS 平台的交易风控能力。平台通过 Processor 对接卡组织（Visa / Mastercard / Amex / Discover），支持 Card Present（CP）和 Card Not Present（CNP）两种交易模式。
+
+> 商户入网审核（KYC/KYB）、合规筛查（OFAC/MATCH）、案件管理由收单平台其他子系统负责，风控系统聚焦交易风控决策和风险监控。
+
+### 1.2 核心目标
+
+- 实时交易风控决策，P99 延迟 < 50ms
+- 分层级规则体系，ISO/ISV 可自助配置规则
+- Chargeback 数据导入与争议流程跟踪，驱动拒付率监控
+- 满足 PCI DSS 审计要求
+
+### 1.3 业务规模
+
+- 日交易量：10 万 ～ 50 万笔
+- 层级结构：Platform → ISO/ISV → Merchant
+- 卡组织对接：通过 Processor（非直连）
+
+### 1.4 风控系统边界
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     收单支付 SaaS 平台                           │
+│                                                                 │
+│  ┌──────────────┐   ┌──────────────────────────────────────┐   │
+│  │ 商户管理系统  │   │         风控系统（本方案）              │   │
+│  │              │   │                                      │   │
+│  │ · KYC/KYB    │──→│ · 事中实时决策                        │   │
+│  │ · 入网审核    │   │ · 事后监控 & 数据回流                 │   │
+│  │ · 合规筛查    │   │ · Chargeback 管理（导入+争议跟踪）    │   │
+│  │ · 案件管理    │   │                                      │   │
+│  └──────────────┘   └──────────────────────────────────────┘   │
+│                                                                 │
+│  ┌──────────────┐   ┌──────────────┐                           │
+│  │ 结算系统      │   │ Processor    │                           │
+│  │ · 资金结算    │   │ · 卡组织对接  │                           │
+│  │ · 保证金管理  │   │ · CB 数据推送 │                           │
+│  └──────────────┘   └──────────────┘                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+风控系统与外部系统的交互：
+- **商户管理系统 → 风控系统**：通过 REST API 同步已入网商户信息和风控参数
+- **Processor → 风控系统**：推送 Chargeback 数据（REST API 或批量文件导入）
+- **风控系统 → 商户管理系统**：输出风控告警和建议（如拒付率超标、建议冻结商户）
+- **风控系统 → 结算系统**：输出风控建议（如建议延迟结算、冻结结算）
+
+---
+
+## 二、事中风控 — 实时决策
+
+> 目标：在交易授权链路中实时完成风控决策，P99 < 50ms。
+> 调用的系统能力：规则引擎、Velocity 引擎、黑白名单引擎、评分模型、关联分析引擎
+
+### 2.1 决策流程
+
+```
+交易请求进入
+    │
+    ▼
+前置校验
+    ├── 商户状态检查（是否冻结/关停）
+    ├── 限额检查（单笔/日/月是否超限）
+    └── 卡 BIN 校验（是否在允许范围）
+    │
+    ▼ (通过)
+风控引擎决策 (<50ms)
+    │
+    │  ┌─────────────────────────────────────────────────────────┐
+    │  │ 第一期: 规则引擎统一执行（无并行分支）                      │
+    │  │                                                         │
+    │  │   Step 1: 执行所有规则，命中时累加 score_weight           │
+    │  │   Step 2: risk_score 回填 TransactionContext              │
+    │  │   Step 3: risk_score >= threshold → DECLINE               │
+    │  │           条件内部按需调用子引擎：                        │
+    │  │           ├── velocity()  → Velocity 引擎 (第六章)        │
+    │  │           ├── blacklist()/whitelist()                     │
+    │  │           │   → 黑白名单引擎 (第七章, Bloom+Redis)        │
+    │  │           └── link_count()                                │
+    │  │               → 关联分析引擎 (第九章, Redis HyperLogLog)  │
+    │  └─────────────────────────────────────────────────────────┘
+    │
+    ▼
+汇总决策: 合并规则命中结果 + risk_score → 返回 decision + suggestions (见 2.2 节)
+    │
+    ├── APPROVE → 返回授权通过 + suggestions (如 REQUIRE_3DS)
+    └── DECLINE → 返回拒绝 + 原因码
+    │
+    ▼ (异步)
+决策日志 → Amazon Data Firehose → 自动攒批 → Redshift
+```
+
+### 2.2 决策结果结构
+
+风控系统返回给支付业务侧的完整决策结果：
+
+```json
+{
+  "request_id": "req_20260330_abc123",
+  "decision": "APPROVE",
+  "risk_score": 55,
+  "triggered_rules": ["R1001", "R2003"],
+  "suggestions": ["REQUIRE_3DS"],
+  "reason_code": "HIGH_RISK_CNP",
+  "degraded": false
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `request_id` | String | 请求唯一标识，用于幂等 |
+| `decision` | Enum | `APPROVE` / `DECLINE` |
+| `risk_score` | Int | 风险评分（0-100） |
+| `triggered_rules` | Array | 命中的规则 ID 列表 |
+| `suggestions` | Array | 智能建议，支付业务侧读取执行 |
+| `reason_code` | String | 拒绝/审核原因码 |
+| `degraded` | Boolean | 是否处于降级模式 |
+
+`suggestions` 来源：
+
+风控建议与主决策规则直接绑定，在规则命中时，Action 属性中直接携带 suggestions：
+
+典型规则与建议绑定示例：
+
+```json
+{
+  "rule_id": "R3001",
+  "name": "CNP高风险评分建议3DS",
+  "condition_groups": [
+    {
+      "logic": "AND",
+      "conditions": [
+        {"type": "txn.entry_mode", "operator": "==", "value": "CNP"},
+        {"type": "score.risk_score", "operator": ">", "value": 60}
+      ]
+    }
+  ],
+  "group_logic": "AND",
+  "action": {
+    "decision": "APPROVE",
+    "score_weight": 0,
+    "suggestions": ["REQUIRE_3DS"]
+  },
+  "reason_code": "HIGH_RISK_CNP"
+}
+```
+
+常见建议绑定场景：
+
+| 规则条件 | decision | suggestions | 说明 |
+|---------|----------|-------------|------|
+| `ENTRY_MODE == CNP AND RISK_SCORE > 60` | APPROVE | `REQUIRE_3DS` | CNP 高风险建议 3DS |
+| `ENTRY_MODE == CP AND AMOUNT > 5000` | APPROVE | `REQUIRE_PIN` | CP 大额建议 PIN |
+| `MERCHANT.require_3ds == true AND ENTRY_MODE == CNP` | APPROVE | `REQUIRE_3DS` | 商户级强制配置 |
+
+当前支持的建议类型：
+
+| Suggestion | 含义 | 支付侧处理 |
+|--------|------|-----------|
+| `REQUIRE_3DS` | 建议触发 3D Secure | CNP 交易插入 3DS 验证流程 |
+| `REQUIRE_PIN` | 建议触发 PIN 验证 | CP 交易要求输入 PIN |
+| `REQUIRE_OTP` | 建议触发 OTP 验证 | 发送短信验证码 |
+
+### 2.3 规则分层级逻辑
+
+```
+执行链: L1 Platform Rules (强制基础规则)
+            → L2 ISO/ISV Rules (租户自定义规则)
+            → L3 Merchant Rules (商户个性化规则)
+
+分层级决策逻辑:
+  - L1 DECLINE → 直接拒绝, 短路终止 (平台强制风控)
+  - L1 APPROVE → 继续执行 L2
+  - L2 DECLINE → 直接拒绝, 短路终止 (租户风控)
+  - L2 APPROVE → 继续执行 L3
+  - L3 决策为最终结果 (商户个性化调整)
+
+优先级: L1 > L2 > L3 (高层级可强制覆盖低层级决策)
+```
+
+### 2.4 试卡攻击防护
+
+试卡攻击特征：短时间内大量小额（$0.01-$1.00）授权请求，用于验证盗取的卡号是否有效。
+
+检测规则：
+- 同商户 5 分钟内授权请求 > 20 笔 → 触发拦截
+- 同商户小额交易（< $2）占比 > 50%（1 小时窗口）→ 告警
+- 同 IP/设备 10 分钟内使用 > 5 张不同卡 → 拦截
+- 授权失败率 > 30%（1 小时窗口）→ 输出建议通知商户管理系统临时冻结商户
+
+### 2.5 交易上下文校验
+
+| MCC 行业 | 合理单笔范围 | 合理时段 | 异常信号 |
+|----------|-------------|---------|---------|
+| 5411 超市 | $5 - $500 | 6:00-24:00 | 凌晨 3 点 $3,000 |
+| 5812 餐饮 | $10 - $300 | 10:00-23:00 | $5,000 单笔 |
+| 5999 零售 | $10 - $2,000 | 8:00-22:00 | 连续相同金额 |
+| 7011 酒店 | $50 - $5,000 | 全天 | 同卡同日多次 |
+
+超出合理范围的交易自动加分（提升风险评分），不直接拒绝但增加审核概率。
+
+### 2.6 CP vs CNP 差异化策略
+
+| 维度 | Card Present | Card Not Present |
+|------|-------------|-----------------|
+| 核心风险 | 伪卡、丢失/被盗卡 | 盗卡号、账户盗用 |
+| 关键信号 | EMV 芯片结果、PIN 验证、终端位置 | AVS、CVV、3DS、IP 地理位置、设备指纹 |
+| Velocity 重点 | 同终端短时间多笔、跨地域刷卡 | 同卡多商户、同 IP 多卡 |
+| 3DS 触发 | 不适用 | 风险评分 > 阈值时触发 |
+
+### 2.7 风控数据维度
+
+| 维度 | 示例 |
+|------|------|
+| 交易 | 金额、币种、MCC、交易类型（CP/CNP） |
+| 卡片 | BIN、发卡国、卡类型、AVS/CVV 结果 |
+| 持卡人 | 地址、IP 地理位置、设备指纹 |
+| 商户 | 历史拒付率、注册时长、行业风险等级 |
+| 行为 | 同卡/同IP/同设备的交易频率和金额累计 |
+
+---
+
+## 三、事后风控 — 监控与数据回流
+
+> 目标：交易完成后持续监控、发现异常、沉淀数据驱动规则优化。
+> 调用的系统能力：规则引擎、Velocity 引擎、黑白名单引擎、关联分析引擎
+
+### 3.1 交易监控 & 异常检测
+
+- 商户维度：日/周/月交易量突增、客单价异常波动、退款率异常、非营业时间交易占比突增
+- 卡片维度：同卡跨商户异常消费模式、授权成功率骤降（试卡攻击信号）
+- 网络维度：关联商户群体异常（团伙欺诈）
+
+### 3.2 退款异常监控
+
+> 退款（Refund）不同于 Chargeback，是商户主动发起的资金返还。异常退款是洗钱、友好欺诈和虚假交易的重要信号。风控系统通过 Processor 交易流水中的退款记录进行监控分析。
+
+**数据来源：** Processor 交易流水中 transaction_type = REFUND 的记录，通过 Firehose 实时写入 Redshift，同时关键指标实时聚合到 Redis。
+
+**退款状态流转：**
+
+```
+INITIATED → PROCESSING → COMPLETED
+                     └→ FAILED
+                     └→ REVERSED（退款被撤销）
+```
+
+| 状态 | 含义 | 说明 |
+|------|------|------|
+| INITIATED | 商户发起退款请求 | 记录退款意图 |
+| PROCESSING | Processor 处理中 | 等待资金清算 |
+| COMPLETED | 退款成功 | 资金已返还持卡人 |
+| FAILED | 退款失败 | 卡号无效、账户关闭等 |
+| REVERSED | 退款被撤销 | 发现欺诈后撤回退款 |
+
+**退款记录数据字段：**
+
+| 字段 | 说明 |
+|------|------|
+| refund_id | 退款唯一 ID |
+| original_txn_id | 原始交易 ID |
+| merchant_id | 商户 ID |
+| iso_id | ISO ID |
+| card_hash | 卡片哈希（脱敏） |
+| refund_amount | 退款金额 |
+| original_amount | 原始交易金额 |
+| currency | 币种 |
+| refund_ratio | 退款金额 / 原始交易金额（1.0 = 全额退款） |
+| status | 退款状态 |
+| initiated_at | 退款发起时间 |
+| completed_at | 退款完成时间 |
+| time_to_refund | 原始交易到退款发起的时间间隔 |
+| refund_reason | 退款原因（商户填写，可选） |
+| initiated_by | 发起人（merchant_portal / api / manual） |
+
+**监控指标体系：**
+
+| 监控指标 | 计算方式 | 告警阈值 | 风险含义 |
+|---------|---------|---------|---------|
+| 退款率（笔数） | 退款笔数 / 总交易笔数（月度滚动） | > 10% | 商品/服务质量问题或友好欺诈 |
+| 退款金额占比 | 退款总金额 / 总交易金额（月度滚动） | > 15% | 可能存在洗钱行为 |
+| 全额退款占比 | refund_ratio = 1.0 的笔数 / 总退款笔数 | > 80% | 异常模式，可能是虚假交易 |
+| 快速退款率 | time_to_refund < 1h 的笔数 / 总退款笔数 | > 30% | 高度可疑，可能是测试或洗钱 |
+| 同卡退款频率 | 同 card_hash 30 天内退款次数 | > 3 次 | 友好欺诈或串通退款 |
+| 退款金额突增 | 当日退款金额 / 过去 30 天日均退款金额 | > 3x | 异常波动，需人工审查 |
+| 非营业时间退款占比 | 非营业时间退款笔数 / 总退款笔数 | > 50% | 可能是自动化欺诈脚本 |
+
+**告警规则与自动处置：**
+
+| 告警级别 | 触发条件 | 自动动作 |
+|---------|---------|---------|
+| INFO | 退款率 5%-10% 或退款金额占比 10%-15% | 记录日志，Dashboard 黄色标记 |
+| WARNING | 退款率 > 10% 或退款金额占比 > 15% | 通知风控运营，商户标记"退款监控中" |
+| CRITICAL | 全额退款占比 > 80% + 快速退款率 > 30% | 通知商户管理系统冻结结算，商户降级为高风险 |
+| CRITICAL | 退款金额突增 > 5x | 通知商户管理系统暂停退款能力，人工介入 |
+
+告警通过 SNS 推送，同时写入 `refund_alerts` 表供前端展示。
+
+**前端页面：**
+- `/refunds/monitoring` — 退款监控仪表盘：
+  - 顶部 KPI 卡片：退款率、退款金额占比、全额退款占比、快速退款率
+  - 商户退款率排行表（Top 10 高退款率商户，含趋势 sparkline）
+  - 退款趋势图（日退款笔数 + 金额，叠加告警阈值线）
+  - 告警列表（按级别排序，CRITICAL 标红，含商户跳转链接）
+- `/refunds/monitoring/:merchant_id` — 商户退款详情：
+  - 商户退款 KPI（退款率、金额占比、全额退款占比、同比环比）
+  - 退款时间分布热力图（按小时 × 星期）
+  - 退款明细列表（关联原始交易，支持按 time_to_refund / refund_ratio 排序）
+  - 同卡退款聚合视图（按 card_hash 分组，标记高频退款卡）
+
+**与商户风控联动（补充 3.4 触发条件）：**
+
+| 触发条件 | 风控系统动作 |
+|---------|-------------|
+| 退款率 > 10%（连续 2 个月） | 降级为中风险，启用增强监控 |
+| 退款率 > 15% 或全额退款占比 > 80% | 降级为高风险，通知商户管理系统冻结结算 |
+| 快速退款率 > 30% + 退款金额突增 > 3x | 通知商户管理系统暂停退款能力 |
+
+**技术实现：**
+- 实时指标：Redis 维护商户级滑动窗口计数器（`refund:merchant:{id}:count:30d`、`refund:merchant:{id}:amount:30d`）
+- 离线分析：Redshift 每日聚合退款统计，计算全额退款占比、时间分布等复杂指标
+- 告警触发：Monitoring Service 每 5 分钟轮询 Redis 实时指标 + 每日 Redshift 批量扫描，双通道告警
+
+### 3.3 Chargeback 管理
+
+> 风控系统接收 Processor 推送的 Chargeback 数据，提供争议流程跟踪和拒付率监控。
+
+**数据来源：** Processor 推送或批量文件导入（CSV）。
+
+**争议状态流转：**
+
+```
+RECEIVED → UNDER_REVIEW → REPRESENTED → WON / LOST
+                                    └→ ARBITRATION → WON / LOST
+```
+
+| 状态 | 含义 | 可执行操作 |
+|------|------|-----------|
+| RECEIVED | 新收到的 Chargeback 通知 | 分类：标记"可抗辩"或"不可抗辩" |
+| UNDER_REVIEW | 正在审查证据和交易记录 | 收集证据、关联原始交易 |
+| REPRESENTED | 已提交 Representment 抗辩 | 等待卡组织裁决 |
+| WON | 抗辩成功，资金归还 | 结案 |
+| LOST | 抗辩失败，确认扣款 | 结案，标签回流模型 |
+| ARBITRATION | 进入卡组织仲裁阶段 | 等待最终裁决 |
+
+**数据字段：**
+
+| 字段 | 说明 |
+|------|------|
+| txn_id | 原始交易 ID |
+| merchant_id | 商户 ID |
+| iso_id | ISO ID |
+| card_brand | 卡组织（Visa/MC/Amex/Discover） |
+| reason_code | 拒付原因码（卡组织定义） |
+| amount | 拒付金额 |
+| currency | 币种 |
+| status | 当前状态（RECEIVED/UNDER_REVIEW/REPRESENTED/WON/LOST/ARBITRATION） |
+| deadline | 抗辩截止日期（< 7 天标红预警） |
+| received_at | 拒付接收时间 |
+| outcome | 最终结果（WON/LOST/PENDING） |
+
+**前端页面：**
+- `/chargebacks` — Chargeback 列表：状态筛选、Deadline 倒计时（< 7 天标红）、操作按钮
+- `/chargebacks/:id` — Chargeback 详情：基本信息 + 时间线（每步操作记录）+ 按状态显示操作按钮
+- `/chargebacks/monitoring` — 拒付率监控：商户排行表 + 趋势图（0.9%/1.5% 阈值线）+ 预警列表
+
+数据用途：
+- **拒付率计算**：实时计算商户 chargeback ratio（Visa VDMP 阈值 0.9%，MC ECP 阈值 1.5%），超标时输出告警
+- **规则效果分析**：关联 CB 与原始交易的风控决策，评估规则有效性
+- **商户风控联动**：高拒付商户自动收紧风控规则（降低限额、标记强制 3DS 等）
+
+### 3.4 商户生命周期风控联动
+
+> 商户入网/关停由商户管理系统负责，风控系统只关注运营期间的风险信号。
+
+风险评级动态调整规则：
+
+| 触发条件 | 风控系统动作 |
+|---------|-------------|
+| 连续 3 个月拒付率 < 0.3% | 升级为低风险，提升限额 |
+| 拒付率 0.5% - 0.9% | 降级为中风险，启用增强监控 |
+| 拒付率 > 0.9%（Visa VDMP 阈值） | 降级为高风险，标记强制 3DS，通知商户管理系统 |
+| 拒付率 > 1.5%（MC ECP 阈值） | 通知商户管理系统和结算系统冻结结算 |
+| 退款率 > 10%（连续 2 个月） | 降级为中风险，启用退款增强监控 |
+| 退款率 > 15% 或全额退款占比 > 80% | 降级为高风险，通知商户管理系统冻结结算 |
+| 快速退款率 > 30% + 退款金额突增 > 3x | 通知商户管理系统暂停退款能力 |
+| 检测到试卡攻击 | 通知商户管理系统临时冻结，关联 IP/设备加入黑名单 |
+
+### 3.5 批量交易回溯分析
+
+当发现新的欺诈模式时，回溯历史交易识别同类风险：
+
+```
+新欺诈模式发现（人工/模型）
+    │
+    ▼
+定义回溯规则（特征组合）
+    │
+    ▼
+Redshift 全量扫描历史交易（按特征匹配）
+    │
+    ▼
+输出可疑交易列表 → 通知商户管理系统处置
+```
+
+### 3.6 风控报表
+
+| 报表 | 受众 | 频率 | 核心指标 |
+|------|------|------|---------|
+| 平台风控总览 | 平台风控团队 | 实时仪表盘 | 全局拒绝率、拒付率 |
+| ISO 风控报告 | ISO 管理员 | 日报/周报 | 旗下商户拒付率排名、风险事件汇总、限额使用率 |
+| 商户风控报告 | ISO/ISV/Merchant | 日报 | 交易通过率、拒绝原因分布、拒付详情 |
+| 设备风控报告 | 平台风控团队 | 日报/周报 | 设备类别分布、Attestation 失败率、Geofence 触发率、设备规则命中排行 |
+
+### 3.7 数据回流
+
+- Chargeback 结果 → 标签数据集 → 规则效果分析
+- 规则效果分析 → 规则优化建议
+
+---
+
+## 四、阶段联动机制
+
+### 4.1 联动关系
+
+```
+商户管理系统                事中风控                    事后风控
+     │                       │                          │
+     │  商户信息+限额 ──────→│  前置校验+规则决策         │
+     │                       │  决策日志 ──────────────→│  交易监控分析
+     │  ←── 风控告警 ────────│                          │
+     │  ←── 建议冻结/降级 ──│←── Chargeback 数据 ──────│
+     │                       │←── 拒付率超标告警 ────────│
+     │                       │  ←── 规则优化 ───────────│  规则效果分析
+     │                       │  ←── 黑名单更新 ─────────│  异常检测结论
+```
+
+### 4.2 自动化处置规则
+
+| 触发事件 | 风控系统自动动作 |
+|---------|-----------------|
+| 商户拒付率 > 0.9% | 标记强制 3DS，降低单笔限额至 $1,000，通知商户管理系统 |
+| 商户拒付率 > 1.5% | 通知商户管理系统和结算系统冻结结算 |
+| 检测到试卡攻击 | 通知商户管理系统临时冻结 30 分钟，关联 IP/设备加入黑名单 |
+| 同一 BIN 段欺诈率 > 5% | 该 BIN 段加入全局黑名单，强制拦截 |
+
+---
+
+
+---
+
+## 五、规则体系
+
+> 贯穿事中（交易风控规则）和事后（监控告警规则、规则效果分析）的核心能力。
+
+### 5.1 条件组合配置
+
+支持 ISO/ISV 自助配置规则，基于**原子条件组合**的简化方案，避免复杂DSL解析。
+
+规则配置示例：
+
+```json
+{
+  "rule_id": "R1001",
+  "name": "高额CNP交易拦截",
+  "layer": "L2_ISO",
+  "tenant_id": "ISO_2001",
+  "priority": 10,
+  "entry_mode": "CNP",
+  "condition_groups": [
+    {
+      "group_name": "高额外卡",
+      "logic": "AND",
+      "conditions": [
+        {"type": "txn.amount", "operator": ">", "value": 5000},
+        {"type": "card.issuer_country", "operator": "!=", "value": "US"}
+      ]
+    }
+  ],
+  "group_logic": "AND",
+  "action": {
+    "decision": "DECLINE",
+    "score_weight": 0,
+    "suggestions": []
+  },
+  "reason_code": "HIGH_AMOUNT_FOREIGN_CNP"
+}
+```
+
+复杂规则示例（多条件组）：
+
+```json
+{
+  "rule_id": "R2001",
+  "name": "复合风险规则",
+  "condition_groups": [
+    {
+      "group_name": "高额外卡",
+      "logic": "AND",
+      "conditions": [
+        {"type": "txn.amount", "operator": ">", "value": 1000},
+        {"type": "card.issuer_country", "operator": "!=", "value": "US"}
+      ]
+    },
+    {
+      "group_name": "高频或黑名单",
+      "logic": "OR",
+      "conditions": [
+        {"type": "velocity.count", "params": {"dimension": "card_hash", "window": "1h"}, "operator": ">", "value": 5},
+        {"type": "list.blacklist", "field": "ip"}
+      ]
+    }
+  ],
+  "group_logic": "OR",
+  "action": {
+    "decision": "DECLINE",
+    "score_weight": 0,
+    "suggestions": []
+  },
+  "reason_code": "COMPOUND_HIGH_RISK"
+}
+```
+
+条件组合规则：
+- 简单规则：1 个 group，内部 AND/OR
+- 复杂规则：多个 group，`group_logic` 控制组间关系（AND/OR）
+- 最多两层嵌套，更复杂的场景拆成多条规则
+
+### 5.2 条件字典
+
+10 大维度，覆盖美国收单支付风控场景：
+
+**① Transaction（交易维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `txn.amount` | 交易金额 | 数值 | `>` `<` `>=` `<=` `==` `BETWEEN` |
+| `txn.currency` | 币种 | 字符串 | `==` `!=` `IN` |
+| `txn.entry_mode` | 交易模式 | 枚举 | `==` `!=` | CP / CNP |
+| `txn.pos_entry_mode` | POS 输入方式 | 枚举 | `==` `IN` | CHIP / SWIPE / CONTACTLESS / MANUAL_KEY / ECOMMERCE |
+| `txn.mcc` | 商户类别码 | 字符串 | `==` `IN` `NOT_IN` |
+| `txn.hour` | 交易时间（小时） | 数值 | `BETWEEN` |
+| `txn.is_recurring` | 是否周期性扣款 | 布尔 | `==` |
+| `txn.is_fallback` | 是否降级交易（芯片→刷卡） | 布尔 | `==` |
+| `txn.auth_type` | 授权类型 | 枚举 | `==` `IN` | FINAL_AUTH / PRE_AUTH / INCREMENTAL |
+
+**② Card（卡片维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `card.bin` | 卡 BIN（前6-8位） | 字符串 | `==` `IN` `PREFIX` |
+| `card.brand` | 卡组织 | 枚举 | `==` `IN` | VISA / MC / AMEX / DISCOVER |
+| `card.type` | 卡类型 | 枚举 | `==` `IN` | CREDIT / DEBIT / PREPAID / COMMERCIAL |
+| `card.issuer_country` | 发卡国 | 字符串 | `==` `!=` `IN` `NOT_IN` |
+| `card.is_international` | 是否跨境卡 | 布尔 | `==` |
+| `card.funding_source` | 资金来源 | 枚举 | `==` | CREDIT / DEBIT / PREPAID |
+
+**③ Verification（验证结果维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `verify.avs_result` | 地址验证结果 | 枚举 | `==` `!=` `IN` | Y / N / U / A / Z |
+| `verify.cvv_result` | CVV 验证结果 | 枚举 | `==` `!=` | M / N / U / P |
+| `verify.3ds_result` | 3DS 验证结果 | 枚举 | `==` `IN` | AUTHENTICATED / ATTEMPTED / FAILED / NOT_ENROLLED |
+| `verify.3ds_version` | 3DS 版本 | 字符串 | `==` `>=` |
+| `verify.pin_verified` | PIN 验证通过 | 布尔 | `==` |
+| `verify.emv_result` | EMV 芯片验证结果 | 枚举 | `==` | APPROVED / DECLINED / UNABLE |
+
+**④ Merchant（商户维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `merchant.status` | 商户状态 | 枚举 | `==` `!=` | ACTIVE / FROZEN / SUSPENDED |
+| `merchant.age_days` | 注册天数 | 数值 | `>` `<` `>=` |
+| `merchant.risk_level` | 风险等级 | 枚举 | `==` `IN` | LOW / MEDIUM / HIGH |
+| `merchant.chargeback_rate` | 当前拒付率 | 数值 | `>` `>=` |
+| `merchant.mcc` | 商户 MCC | 字符串 | `==` `IN` |
+| `merchant.require_3ds` | 是否强制 3DS | 布尔 | `==` |
+
+**⑤ Geo/Network（地理/网络维度）— CNP 为主**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `geo.ip_country` | IP 所在国 | 字符串 | `==` `!=` `IN` |
+| `geo.ip_state` | IP 所在州 | 字符串 | `==` `IN` |
+| `geo.billing_shipping_match` | 账单地址与收货地址是否一致 | 布尔 | `==` |
+| `geo.ip_card_country_match` | IP 国家与发卡国是否一致 | 布尔 | `==` |
+| `geo.is_vpn` | 是否 VPN/代理 | 布尔 | `==` |
+| `geo.is_tor` | 是否 Tor 出口节点 | 布尔 | `==` |
+| `geo.distance_km` | 地理距离（两点间） | 数值 | `>` |
+
+**⑥ Device（设备维度）— CP 为主**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `device.category` | 设备类别 | 枚举 | `==` | CERTIFIED_POS / DEDICATED_DEVICE / COTS_DEVICE |
+| `device.status` | 设备状态 | 枚举 | `==` | ACTIVE / BLOCKED |
+| `device.attestation_status` | 完整性证明 | 枚举 | `==` | VERIFIED / FAILED / EXPIRED |
+| `device.is_rooted` | Root/越狱 | 布尔 | `==` |
+| `device.tee_available` | TEE 可用 | 布尔 | `==` |
+| `device.is_emulator` | 模拟器 | 布尔 | `==` |
+| `device.tamper_detected` | 物理篡改 | 布尔 | `==` |
+| `device.pts_cert_expired` | PTS 证书过期 | 布尔 | `==` |
+
+**⑦ Velocity（频率/累计维度）— 高级，风控专家使用**
+
+| 条件 Key | 说明 | 参数 | 操作符 |
+|----------|------|------|--------|
+| `velocity.count` | 交易次数 | dimension + window | `>` `>=` |
+| `velocity.amount` | 累计金额 | dimension + window | `>` `>=` |
+| `velocity.distinct` | 去重计数 | from + to + window | `>` `>=` |
+
+dimension: `card_hash` / `ip` / `device_id` / `email` / `merchant_id` / `terminal_id`
+window: `5m` / `15m` / `1h` / `6h` / `24h` / `7d` / `30d`
+
+**⑧ Limit（限额维度）— 简化，ISO/商户管理员使用**
+
+| 条件 Key | 说明 | 内置维度 | 内置窗口 |
+|----------|------|---------|---------|
+| `limit.single_txn_amount` | 单笔限额 | — | — |
+| `limit.card_daily_count` | 单卡日交易笔数 | card_hash | 24h |
+| `limit.card_daily_amount` | 单卡日累计金额 | card_hash | 24h |
+| `limit.merchant_daily_count` | 商户日交易笔数 | merchant_id | 24h |
+| `limit.merchant_daily_amount` | 商户日累计金额 | merchant_id | 24h |
+| `limit.merchant_monthly_amount` | 商户月累计金额 | merchant_id | 30d |
+| `limit.terminal_daily_count` | 终端日交易笔数 | terminal_id | 24h |
+| `limit.terminal_daily_amount` | 终端日累计金额 | terminal_id | 24h |
+
+Limit 底层复用 Velocity 引擎，前端配置时只需填阈值。
+
+**⑨ List（名单维度）**
+
+| 条件 Key | 说明 | 字段 |
+|----------|------|------|
+| `list.blacklist` | 黑名单命中 | card_hash / ip / email / device_id / phone / merchant_id |
+| `list.whitelist` | 白名单命中 | 同上 |
+
+**⑩ Score（评分维度）**
+
+| 条件 Key | 说明 | 类型 | 操作符 |
+|----------|------|------|--------|
+| `score.risk_score` | 风险评分 | 数值 | `>` `>=` `<` `BETWEEN` |
+
+### 5.2 规则生命周期
+
+```
+创建/编辑 → 语法校验 → 沙箱测试 → 审批 → 发布 → 生效 → 监控 → 优化/下线
+                                    │
+                              版本快照（支持回滚）
+```
+
+### 5.3 安全约束
+
+- 表达式沙箱执行，禁止任意代码
+- 平台级规则 ISO/ISV 不可修改或覆盖
+- 规则变更需审计日志，支持版本回滚
+- 规则编译后缓存，变更时热加载
+
+### 5.4 规则模板
+
+> 提供预置规则集模板，ISO 可基于模板快速创建规则，也可将自己的规则集保存为模板供其他 ISO 使用。
+
+**模板层级：**
+
+```
+系统默认模板 (Platform 提供)
+    ├── 通用行业模板 — 覆盖所有 MCC，基础限额 + Velocity + 黑名单
+    ├── 高风险行业模板 — MCC 5967/5966/7995 等，更严格阈值
+    └── 低风险行业模板 — MCC 5411/5812 等，更宽松阈值
+
+ISO 自定义模板
+    └── 任意 ISO 可将当前规则集保存为模板（默认公开，其他 ISO 可见）
+```
+
+**使用流程：**
+
+```
+新 ISO 入网 / ISO 重置规则
+    │
+    ▼
+选择模板（系统模板 / 其他 ISO 模板 / 空白）
+    │
+    ▼
+从模板复制一份独立副本到该 ISO 名下
+    │
+    ▼
+ISO 在副本上调整阈值、增删规则
+    │
+    ▼
+可选: 将当前配置 "保存为模板"
+```
+
+模板是**复制**而非引用，ISO 修改不影响模板，模板更新不影响已创建的 ISO 规则。
+
+**模板数据结构：**
+
+```json
+{
+  "template_id": "TPL_001",
+  "name": "系统通用模板",
+  "source": "PLATFORM",
+  "source_id": null,
+  "description": "适用于所有行业的基础风控规则集",
+  "mcc_scope": "ALL",
+  "rules": [
+    {
+      "name": "商户日累计限额",
+      "entry_mode": "ALL",
+      "condition_groups": [{
+        "logic": "OR",
+        "conditions": [
+          {"type": "limit.merchant_daily_amount", "operator": ">", "value": 50000000},
+          {"type": "limit.merchant_daily_count", "operator": ">", "value": 100000}
+        ]
+      }],
+      "group_logic": "AND",
+      "action": {"decision": "DECLINE", "score_weight": 0},
+      "reason_code": "MERCHANT_DAILY_LIMIT"
+    }
+  ],
+  "version": 1
+}
+```
+
+### 5.5 规则列表页 — 级联生效视角
+
+> 原型已实现。规则列表页左侧 Tenant Tree 采用**级联生效视角**（Effective Rules View），展示选中租户实际生效的完整规则集。
+
+**筛选逻辑：**
+
+| 选中节点 | 显示的规则 | 说明 |
+|---------|-----------|------|
+| All Rules | 全部规则 | 总览/管理视角 |
+| Platform | 仅 L1 Platform 规则 | 平台强制规则 |
+| ISO Alpha Corp | L1 Platform + L2 ISO_2001 | ISO 实际生效的规则集 |
+| Merchant QuickMart | L1 Platform + L2 ISO_2001 + L3 M_1001 | 商户实际生效的完整规则集 |
+
+**层级可编辑性：**
+- 当前选中租户自己的规则层：正常显示，可编辑
+- 继承的上层规则：半透明显示（`opacity-60`），标注 `🔒 Inherited · read-only`
+
+**层级展示排序：**
+
+当前层级优先展示，继承层级置后：
+
+| 选中节点 | 展示顺序 | 说明 |
+|---------|---------|------|
+| All Rules / Platform | L1 → L2 → L3 | 按引擎执行顺序 |
+| ISO | L2 → L1 | 自己的规则在前，继承的 Platform 在后 |
+| Merchant | L3 → L2 → L1 | 自己的规则在前，继承的 ISO、Platform 在后 |
+
+示例：选中 Merchant QuickMart 时：
+- L3 Merchant → 正常显示，可编辑（置顶）
+- L2 ISO Alpha Corp → 🔒 Inherited · read-only（半透明）
+- L1 Platform → 🔒 Inherited · read-only（半透明）
+
+**Mock 数据覆盖：**
+
+| 层级 | 规则数 | 覆盖范围 |
+|------|--------|---------|
+| L1 Platform | 7 条 | 全局强制规则（OFAC、限额、冻结商户、试卡攻击等） |
+| L2 ISO_2001 (Alpha Corp) | 15 条 | 7 score + 8 decision |
+| L2 ISO_2002 (Beta Pay) | 11 条 | 6 score + 5 decision |
+| L3 Merchant | 29 条 | 全部 15 个商户均有 1-3 条自定义规则 |
+
+L3 规则按商户业务类型差异化设计（如 LuxRetail 预付卡拦截、GasStation 快速刷卡拦截、OnlineShop VPN 拦截等）。
+
+
+---
+
+## 六、评分模型
+
+> 主要服务事中（实时打分）。采用规则加权评分方案，100% 可解释，无需训练数据。
+
+### 6.1 评分机制
+
+每条规则都携带 `score_weight`（正整数），规则命中时累加到 `risk_score`。不再区分"评分规则"和"决策规则"，所有规则统一处理。
+
+规则 action 结构：
+
+```json
+{
+  "action": {
+    "decision": "NONE",
+    "score_weight": 15,
+    "suggestions": []
+  }
+}
+```
+
+decision 可选值：
+- `NONE` — 仅加分，不做决策
+- `APPROVE` — 命中时标记通过（携带 suggestions）
+- `DECLINE` — 命中时直接拒绝（短路终止）
+
+执行流程：
+
+```
+risk_score = 0
+
+FOR each rule (按层级 L1 → L2 → L3 执行):
+  IF 规则命中:
+    risk_score += rule.score_weight
+    IF rule.decision == DECLINE → 短路终止
+    IF rule.decision == APPROVE → 累积 suggestions
+
+所有规则执行完毕后:
+  IF risk_score >= tenant.decline_threshold → DECLINE
+  ELSE → APPROVE
+```
+
+### 6.2 阈值配置
+
+阈值由 ISO 自行配置，Platform 设置默认值：
+
+| 配置项 | 说明 | 默认值 | 可配层级 |
+|--------|------|--------|---------|
+| `decline_threshold` | risk_score >= 此值则 DECLINE | 70 | Platform / ISO |
+
+配置存储在租户配置表中，规则引擎执行时读取当前 ISO 的阈值。
+
+### 6.3 评分公式可视化
+
+**规则列表页 — 评分公式面板（折叠式摘要条）：**
+
+评分公式是 ISO 级别的配置，仅在 ISO / Merchant 视角下显示。All Rules 和 Platform 视角不显示（因为不存在全局评分体系）。
+
+面板默认折叠为一行摘要条，点击展开查看完整详情：
+
+```
+折叠状态（默认）：
+┌─────────────────────────────────────────────────────────────┐
+│ ▸ Risk Score │ Threshold ≥70 → DECLINE │ 7 rules │ Max: 125│
+└─────────────────────────────────────────────────────────────┘
+
+Merchant 视角下额外标注来源：
+┌─────────────────────────────────────────────────────────────┐
+│ ▸ Risk Score │ Threshold ≥70 → DECLINE │ 7 rules │ Max: 125│
+│                                    Inherited from ISO Alpha │
+└─────────────────────────────────────────────────────────────┘
+
+展开状态（点击 ▸ 后）：
+┌─────────────────────────────────────────────────────────────┐
+│ ▾ Risk Score │ Threshold ≥70 → DECLINE │ 7 rules │ Max: 125│
+│─────────────────────────────────────────────────────────────│
+│ Decline Threshold: [score ≥ 70 → DECLINE]                   │
+│ risk_score = Σ (hit rules × score_weight)                   │
+│                                                             │
+│  0              70             125                          │
+│  ├──────────────┼──────────────┤                           │
+│  │   APPROVE    │   DECLINE    │                           │
+│  ■■■■■■■■■■■■■■▓▓▓▓▓▓▓▓▓▓▓▓▓▓                           │
+│  green          red                                         │
+│                                                             │
+│ S001  Foreign Card Score     issuer_country != US      +15  │
+│ S002  High Amount CNP Score  amount > 3000 & CNP       +25  │
+│ S003  AVS Mismatch Score     avs_result == N           +20  │
+│ S004  CVV Mismatch Score     cvv_result == N           +25  │
+│ S005  High Velocity Score    card 1h > 3               +20  │
+│ S006  New Merchant Score     merchant_age < 90         +10  │
+│ S007  CNP Entry Score        entry_mode == CNP         +10  │
+│                                            Total      = 125 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+显示规则：
+- **All Rules / Platform 视角**：不显示评分面板（无单一评分体系）
+- **ISO 视角**：显示该 ISO 的评分面板（可编辑 Threshold）
+- **Merchant 视角**：显示父 ISO 的评分面板，标注 `Inherited from {ISO名称}`
+
+**交易详情页 — 评分分解指示器：**
+
+针对单笔交易，展示实际命中的规则及各自贡献：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Risk Score Breakdown — TXN_20260422_abc123                  │
+│                                                             │
+│ Final Score: 65 / APPROVE (threshold: 70)                   │
+│                                                             │
+│  0              65  70             125                       │
+│  ├──────────────┼───┼──────────────┤                       │
+│  ■■■■■■■■■■■■■■░░░░│              │                       │
+│  APPROVE        ▲   DECLINE                                 │
+│                                                             │
+│ Score Composition:                                          │
+│  R2001 跨境卡交易      ████████████████ +15   ✓ HIT        │
+│  R2002 高额CNP无3DS    █████████████████████████ +25  ✓ HIT│
+│  R2003 AVS不匹配       ████████████████████ +20   ✓ HIT    │
+│  R2004 CVV不匹配                              0   ✗ MISS   │
+│  R2005 高频交易                                0   ✗ MISS   │
+│  R2006 新商户                                  0   ✗ MISS   │
+│  R2007 CNP交易          ██████████ +10   ✓ HIT              │
+│                         ─────────                           │
+│                         Total: 65 → APPROVE                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+
+---
+
+## 七、设备风控
+
+> 针对 Card Present 场景下的受理终端进行设备级风险评估。覆盖 Certified POS、Dedicated Device（SoftPOS 专用设备）、COTS Device（消费者手机 Tap-to-Phone）三类设备。
+
+### 7.1 设备分类与风险差异
+
+| 设备类别 | 典型设备 | 受理方式 | 核心风险 |
+|---------|---------|---------|---------|
+| CERTIFIED_POS | Ingenico APOS A8, PAX A920 | 芯片/刷卡/NFC | PTS 证书过期、固件漏洞、物理篡改 |
+| DEDICATED_DEVICE | Sunmi V2s, Galaxy Tab Active | SoftPOS | 设备完整性、Root/越狱、TEE 不可用 |
+| COTS_DEVICE | iPhone 15 Pro, Galaxy S25 | SoftPOS (Tap-to-Phone) | 个人设备、Root/越狱、Hook 框架、模拟器 |
+
+风险等级递增：CERTIFIED_POS < DEDICATED_DEVICE < COTS_DEVICE
+
+### 7.2 设备风控数据维度
+
+交易请求中携带的设备上下文字段，按设备类别差异化采集：
+
+| 字段 | POS | Dedicated | COTS | 说明 |
+|------|-----|-----------|------|------|
+| device_id | ✓ | ✓ | ✓ | 设备唯一标识 |
+| device_category | ✓ | ✓ | ✓ | 设备分类 |
+| manufacturer / model | ✓ | ✓ | ✓ | 厂商型号 |
+| location (lat/lng) | ✓ | ✓ | ✓ | GPS/WiFi/基站定位 |
+| firmware_version | ✓ | — | — | POS 固件版本 |
+| pts_cert_expiry | ✓ | — | — | PCI PTS 证书到期日 |
+| tamper_detected | ✓ | — | — | 硬件防篡改触发 |
+| serial_number | ✓ | — | — | 序列号（白名单校验） |
+| attestation.status | — | ✓ | ✓ | 设备完整性证明：VERIFIED / FAILED / EXPIRED |
+| attestation.provider | — | ✓ | ✓ | Play Integrity / Device Check |
+| security.is_rooted | — | ✓ | ✓ | Root/越狱检测 |
+| security.tee_available | — | ✓ | ✓ | TEE 可用性（SoftPOS 密钥存储必需） |
+| security.debug_mode | — | ✓ | ✓ | 调试模式检测 |
+| security.is_emulator | — | ✓ | ✓ | 模拟器检测 |
+| security.hook_framework | — | ✓ | ✓ | Xposed/Frida 等 Hook 框架检测 |
+
+### 7.3 设备风控规则
+
+设备风控规则复用规则引擎（第五章）的原子条件组合执行框架，通过 `device.*` 字段路径访问设备上下文。
+
+按设备类别分组的核心规则（条件列为简写，实际存储为条件组合 JSON）：
+
+**Certified POS：**
+
+| 规则 | 条件 | 风险等级 | 说明 |
+|------|------|---------|------|
+| PTS 证书过期 | `DEVICE_DATE < now()` · field: pts_cert_expiry | HIGH_RISK | 不再满足安全标准 |
+| 物理篡改触发 | `DEVICE_BOOLEAN == true` · field: tamper_detected | HIGH_RISK | 可能被安装窃取器 |
+| 固件版本过低 | `DEVICE_VERSION < min_version` · field: firmware_version | WARNING | 存在已知漏洞 |
+| 未知序列号 | `WHITELIST(serial_number)` · 取反 | HIGH_RISK | 非注册设备 |
+
+条件组合 JSON 示例（PTS 证书过期）：
+
+```json
+{
+  "conditions": [
+    {"type": "DEVICE_DATE", "field": "device.pts_cert_expiry", "operator": "<", "value": "now()"}
+  ],
+  "logic": "AND"
+}
+```
+
+**COTS / Dedicated Device：**
+
+| 规则 | 条件 | 风险等级 | 说明 |
+|------|------|---------|------|
+| 完整性证明失败 | `DEVICE_STRING == 'FAILED'` · field: attestation.status | HIGH_RISK | 设备可能被篡改 |
+| Root/越狱 | `DEVICE_BOOLEAN == true` · field: is_rooted | HIGH_RISK | 安全控制可被绕过 |
+| TEE 不可用 | `DEVICE_BOOLEAN == false` · field: tee_available | HIGH_RISK (COTS) / WARNING (Dedicated) | SoftPOS 密钥存储依赖 TEE |
+| 模拟器检测 | `DEVICE_BOOLEAN == true` · field: is_emulator | HIGH_RISK | 虚拟设备欺诈 |
+| Hook 框架 | `DEVICE_BOOLEAN == true` · field: hook_framework | HIGH_RISK | 运行时篡改 |
+| 调试模式 | `DEVICE_BOOLEAN == true` · field: debug_mode | WARNING | 生产环境不应开启 |
+| 证明过期 | `DEVICE_HOURS_SINCE > 24` · field: attestation.verified_at | WARNING | 需要刷新证明 |
+
+**通用规则（所有设备类别）：**
+
+| 规则 | 条件 | 风险等级 | 说明 |
+|------|------|---------|------|
+| 设备已封禁 | `DEVICE_STRING == 'BLOCKED'` · field: status | HIGH_RISK | 直接拒绝 |
+| 不可能旅行 | `GEO_DISTANCE > 500` · params: {from: prev_location, minutes: 30} | HIGH_RISK | 30 分钟内移动 500km+ |
+| 设备交易频率 | `VELOCITY > 50` · params: {dimension: device_id, window: 1h} | HIGH_RISK | 异常高频 |
+| 设备多卡 | `LINK_COUNT > 10` · params: {from: device_id, to: card, window: 1h} | HIGH_RISK | 同设备大量不同卡 |
+| 定位缺失 | `DEVICE_NULL == true` · field: location | WARNING | 无法做地理围栏校验 |
+
+
+### 7.4 设备监控指标
+
+| 指标 | 计算方式 | 告警阈值 |
+|------|---------|---------|
+| Attestation 失败率 | 失败次数 / 总验证次数（30 天滚动） | > 2% |
+| Geofence 触发率 | 地理围栏违规次数 / 总交易次数（30 天滚动） | > 2% |
+| COTS 设备占比 | COTS 交易量 / CP 总交易量 | 监控趋势，无固定阈值 |
+| 设备规则命中趋势 | 按 HIGH_RISK / WARNING 分类的每日命中数 | 突增 > 50% |
+
+
+---
+
+## 八、前端页面设计
+
+### 10.6 设备风控前端集成
+
+> 原型已实现。设备风控信息嵌入现有页面展示。
+
+**Dashboard（`/dashboard`）— Risk Overview 三层布局：**
+
+Layer 1 — KPI 行（3 个）：
+- Total Transactions、Decline Rate、Chargeback Rate
+
+Layer 2 — 交易拒绝分析：
+- Decline Reasons (7d) 堆叠面积图（Velocity / Blacklist / Limit / Device / Other）
+
+Layer 3 — Device Security 区块：
+- 总览行：设备总数 + HIGH_RISK 设备数
+- 左图：Issues by Type 水平条形图（Root/Jailbreak、FW Outdated、Attest Failed 等 8 类安全问题按数量排序）
+- 右图：Affected Models TreeMap 矩形树图（面积=受影响设备数，颜色按类别：COTS 红/POS 绿/Dedicated 蓝，标签=型号+数量+issue）
+- 趋势图：Security Threats (30d) 多线图（Root/Jailbreak + Attest Fail 实线，Debug Mode + Geofence 虚线）
+
+设备型号覆盖：
+- Certified POS：SUNMI P2、P3、P3H、P3K、P3KH
+- Dedicated Device：SUNMI V2s、CPad Pay
+- COTS Device：OPPO A78、Samsung Galaxy S25、Xiaomi 14、Google Pixel 9 等
+
+**Analytics（`/analytics`）— Risk Analytics 独立页面：**
+- Top Breached Rules + Highest Risk Entities（左右两列表格）
+- Top Affected Devices 完整表格（型号 + 类别 + 安全问题 + 数量 + 风险等级）
+
+**Rule Editor — 设备字段支持：**
+- Device Category 选择器（ALL / CERTIFIED_POS / DEDICATED_DEVICE / COTS_DEVICE）
+- 条件字段下拉按分组展示（Transaction / Card / Verification / Merchant / Geo / Device / Velocity / Limit / List / Score）
+- 设备字段按 `device_category` 动态过滤
+
+**Velocity Config — 设备维度计数器：**
+- 4 个设备维度计数器模板：Device Txn Count、Device Txn Amount、Device Distinct Cards、Device Location Jump
+- Platform 级计数器只读保护
+
+**Transaction Detail — 设备信息区块：**
+- 设备基本信息 + 安全字段（attestation/security）+ 规则详情卡片 + 分数公式
+
+**Merchant Detail — 关联设备列表：**
+- 按 merchant_id 过滤关联设备，无设备时隐藏
+
+**Reports — Device Risk Tab：**
+- 设备 KPI 汇总 + 设备类别饼图 + 鉴证趋势 + 围栏趋势表格 + 规则命中排行表
+
+**Refund Monitoring（`/refunds/monitoring`）— 退款异常监控：**
+- KPI 行：Refund Rate、Refund Amount Ratio、Full Refund Ratio、Fast Refund Rate
+- 商户退款率排行表（Top 10，含 sparkline 趋势）
+- 退款趋势图（日退款笔数 + 金额折线，叠加 10%/15% 阈值线）
+- 告警列表（CRITICAL 标红，WARNING 标黄，含商户跳转链接）
+
+**Refund Monitoring Detail（`/refunds/monitoring/:merchant_id`）— 商户退款详情：**
+- 商户退款 KPI（退款率、金额占比、全额退款占比、同比环比变化）
+- 退款时间分布热力图（小时 × 星期，颜色深浅表示退款密度）
+- 退款明细列表（关联原始交易，支持按 time_to_refund / refund_ratio 排序筛选）
+- 同卡退款聚合视图（按 card_hash 分组，高频退款卡标红）
+
+---
+
+
+---
+
+## 九、AI 风控助手
+
+### 11.5 AI 风控助手
+
+> 原型已实现。嵌入前端操作台的上下文感知 AI 助手，辅助风控运营决策。
+
+**交互方式：**
+- 右侧滑出面板（420px 宽），快捷键 `⌘K` 唤起 / `Esc` 关闭
+- 打字机效果逐字输出，数据引用（金额、百分比、规则 ID）高亮显示
+- 回复中可包含页面跳转链接（如"查看商户"→ `/merchants/M_1012`）
+
+**上下文感知：**
+
+AI 助手根据当前页面路由自动切换上下文和推荐提问：
+
+| 页面 | 推荐提问示例 | 能力 |
+|------|-------------|------|
+| Dashboard | "今日交易概况"、"有什么异常？" | 汇总 KPI、检测异常指标 |
+| Rules / Rule Editor | "帮我写一条规则"、"规则优化建议"、"阈值调整建议" | 规则生成、模板推荐、效果预估 |
+| Transactions | "这笔交易为什么被拒？"、"分析风险因素" | 单笔交易风险归因分析 |
+| Chargebacks | "当前争议概况"、"抗辩建议" | CB 统计汇总、抗辩策略建议 |
+| Refund Monitoring | "退款率最高的商户？"、"有异常退款模式吗？" | 退款异常检测、商户退款行为分析 |
+| Merchants | "高风险商户有哪些？"、"拒付率最高的商户？" | 商户风险排查 |
+
+**核心能力：**
+- 风控数据查询：交易概况、拒绝率分析、高风险商户识别
+- 规则辅助：根据历史数据生成规则建议（条件 + 决策 + 预估命中率/误杀率）、推荐常用模板、阈值优化建议
+- 交易分析：单笔交易风险因素归因（各维度权重占比）、相似案例匹配
+- 异常检测：主动发现拒绝率突增、商户异常
+
+**技术实现（第二期）：**
+- 后端：LLM API（如 Amazon Bedrock）+ RAG（检索增强生成），知识库包含规则配置、历史决策日志
+- 前端：当前原型使用关键词匹配 mock 响应，后续替换为实时 API 调用 + 流式输出
+
+---
+
+---
+
+## 十、交付规划
+
+## 十六、资源预估
+
+### 16.1 云资源明细表
+
+| AWS 服务 | 规格 | 预估月成本 |
+|---------|------|-----------|
+| Aurora MySQL | db.r6g.xlarge, 1写+2读 | ~$1,500 |
+| ElastiCache Redis | cache.r6g.large, 3节点 | ~$800 |
+| Redshift Serverless | 8 RPU 基础 | ~$500-1,500 |
+| Data Firehose | 决策日志流式导入 Redshift | ~$15 |
+| EKS | 3-5 × m6i.xlarge | ~$800 |
+| S3 | 标准存储 | ~$50 |
+| SNS | 告警通知 | ~$5 |
+| **合计** | | **~$3,200-4,200/月** |
+
+与 v3 对比：去掉 EventBridge (~$15) + SQS 9队列+9DLQ (~$5) + Lambda 7函数 (~$20)，节省约 $40/月基础设施成本，更重要的是减少了运维复杂度。
+
+随交易量弹性伸缩。
+
+---
+
+## 十七、实施计划
+
+### 17.1 第一期 MVP（第 1-3 月）
+
+**事中风控：**
+- 风控引擎核心：规则引擎 + Velocity + 黑白名单
+- 规则加权评分（非 ML）
+- 降级策略 + 幂等性
+- 配置变更轮询广播机制
+
+**事后风控：**
+- Chargeback 数据导入 + 争议状态流转 + 拒付率计算
+- 决策日志 Firehose 直投 Redshift
+
+**前端原型：**
+- 风控操作台全量页面（24 个路由）
+- 设备风控前端集成（嵌入现有页面）
+- AI 风控助手原型（mock 响应，验证交互模式）
+
+**基础设施：**
+- 审计日志
+- Aurora + Redis + Redshift + Firehose 部署
+
+### 17.2 第二期 智能化（第 4-6 月）
+
+**事中增强：**
+- 试卡攻击防护、关联分析引擎、交易上下文校验
+
+**AI 风控助手：**
+- LLM + RAG 后端接入（Amazon Bedrock）
+- 替换原型 mock 响应为实时 API 调用
+- 知识库构建：规则配置、决策日志
+
+**事后增强：**
+- 拒付率实时监控 & 自动预警
+- 退款异常监控
+
+### 17.3 第三期 深度演进（第 7-12 月）
+
+**事后深化：**
+- 批量交易回溯分析能力
+
+**平台能力：**
+- 多维度报表 & BI 仪表盘
+
+---
+
+# 附录：能力 × 阶段映射矩阵
+
+```
+                        事中           事后
+                     (实时决策)     (监控回流)
+                    ──────────    ──────────
+规则引擎              ✓             ✓
+(第五章)           交易风控规则    监控告警规则
+                                 规则效果分析
+
+Velocity 引擎        ✓             ✓
+(第六章)          实时频率检测    异常检测基础数据
+
+黑白名单引擎          ✓             ✓
+(第七章)          实时匹配拦截   异常检测→加黑名单
+
+评分模型              ✓
+(第八章)          规则加权评分
+
+关联分析引擎          ✓             ✓
+(第九章)          实时关联检测    团伙欺诈发现
+
+设备风控引擎          ✓             ✓
+(第十章)          设备完整性校验  设备监控指标
+
+降级/幂等/轮询广播/Firehose       ✓             ✓
+(第十一章)        降级+幂等      配置广播+日志投递
+
+AI 风控助手                       ✓             ✓
+(11.5)           规则生成辅助     数据查询+异常检测
+                 交易风险归因     报表解读
